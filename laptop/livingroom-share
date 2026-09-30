@@ -135,29 +135,23 @@ def monitor_source():
         return None
 
 
-def build_pipeline(fd, node):
+def build_pipeline(src):
     host = socket.gethostbyname(HOST)
     enc = encoder()
     log(f"sending to {HOST} ({host}) with {enc.split()[0]}")
-    # For a virtual monitor the consumer's caps set its size: ask for exactly
-    # the living-room display's resolution.
-    size = f"! video/x-raw,width={WIDTH},height={HEIGHT} " if EXTEND else ""
-    # GNOME sends a frame only when something changed (otherwise empty
-    # buffers that pipewiresrc drops), so a still screen would send nothing and
-    # the receiver would time out. Put the capture on a live 30 fps canvas
-    # (compositor over a black videotestsrc), which repeats the latest frame.
-    video = (f"compositor name=canvas background=black latency=40000000 "
-             f"! video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1 "
+    # GNOME sends a new frame only when something changed; keepalive-time
+    # makes pipewiresrc repeat the last one twice a second on a still screen
+    # (so the receiver never times out), and videorate evens it out to 30 fps.
+    # (A compositor "canvas" for a steady rate discarded the late-arriving
+    # screen frames and froze the picture.)
+    video = (f"pipewiresrc name=cap {src} do-timestamp=true keepalive-time=500 "
+             f"! videoconvert ! videoscale add-borders=true "
+             f"! video/x-raw,width={WIDTH},height={HEIGHT},pixel-aspect-ratio=1/1 "
+             f"! videorate ! video/x-raw,framerate={FPS}/1 "
              f"! queue leaky=downstream max-size-buffers=2 ! videoconvert "
              f"! {enc} ! h264parse config-interval=-1 "
              f"! rtph264pay pt=96 config-interval=-1 mtu=1200 "
-             f"! udpsink host={host} port={VIDEO_PORT} sync=false "
-             f"videotestsrc is-live=true pattern=black "
-             f"! video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1 ! canvas.sink_0 "
-             f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=500 {size}"
-             f"! videoconvert ! videoscale add-borders=true "
-             f"! video/x-raw,width={WIDTH},height={HEIGHT},pixel-aspect-ratio=1/1 "
-             f"! queue leaky=downstream max-size-buffers=2 ! canvas.sink_1 ")
+             f"! udpsink host={host} port={VIDEO_PORT} sync=false")
     mon = monitor_source()
     audio = (f" pulsesrc device={mon} ! audioconvert ! audioresample "
              f"! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate=128000 "
@@ -165,7 +159,47 @@ def build_pipeline(fd, node):
     return Gst.parse_launch(video + audio)
 
 
-def place_virtual_monitor(tries=[0]):
+class MonitorRecording:
+    """Records one monitor through Mutter's own ScreenCast API.
+
+    The portal's virtual-monitor stream (GNOME 50) only ever contains the
+    wallpaper - windows moved onto the virtual monitor are missing - while
+    recording that monitor like any other one shows everything. So in extend
+    mode the portal stream only keeps the virtual monitor alive, and the
+    picture comes from here."""
+    N = "org.gnome.Mutter.ScreenCast"
+
+    def __init__(self, connector, on_node):
+        from gi.repository import Gio
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.session, = self.call("/org/gnome/Mutter/ScreenCast", self.N, "CreateSession",
+                                  GLib.Variant("(a{sv})", ({},)))
+        # cursor-mode 1 = embedded in the picture
+        stream, = self.call(self.session, self.N + ".Session", "RecordMonitor",
+                            GLib.Variant("(sa{sv})", (connector, {"cursor-mode": GLib.Variant("u", 1)})))
+        self.bus.signal_subscribe(self.N, self.N + ".Stream", "PipeWireStreamAdded", stream,
+                                  None, 0, lambda *a: on_node(a[5].unpack()[0]))
+        self.call(self.session, self.N + ".Session", "Start", None)
+
+    def call(self, path, iface, method, args):
+        return self.bus.call_sync(self.N, path, iface, method, args, None, 0, -1, None).unpack()
+
+    def stop(self):
+        try:
+            self.call(self.session, self.N + ".Session", "Stop", None)
+        except GLib.Error:
+            pass
+
+
+def virtual_monitors():
+    from gi.repository import Gio
+    N, P = "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig"
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    _s, monitors, _l, _p = bus.call_sync(N, P, N, "GetCurrentState", None, None, 0, -1, None).unpack()
+    return {m[0][0] for m in monitors if m[0][0].startswith("Meta-")}
+
+
+def place_virtual_monitor(before, found, tries=[0]):
     """GNOME creates the virtual monitor ("Meta-N") but does not add it to the
     desktop layout, so the pointer and windows cannot reach it. Put it to the
     right of the existing monitors (temporary config: not saved)."""
@@ -183,11 +217,19 @@ def place_virtual_monitor(tries=[0]):
             m = ([x for x in modes if x[6].get("is-current")]
                  or [x for x in modes if x[6].get("is-preferred")] or modes)
             mode[spec[0]] = m[0]
-        placed = {lm[5][0][0] for lm in logical}
-        virtual = [c for c in mode if c.startswith("Meta-") and c not in placed]
-        if not virtual:
+        new = sorted(c for c in mode if c.startswith("Meta-") and c not in before)
+        if not new:
             tries[0] += 1
-            return tries[0] < 20          # keep polling for up to ~10 s
+            if tries[0] >= 20:            # ~10 s
+                log("the virtual monitor did not appear")
+                GLib.idle_add(loop.quit)
+                return False
+            return True
+        found(new[-1])
+        placed = {lm[5][0][0] for lm in logical}
+        virtual = [c for c in new if c not in placed]
+        if not virtual:
+            return False                  # GNOME remembered where it goes
         cfg, right = [], 0
         for x, y, scale, transform, primary, specs, _p in logical:
             conn = specs[0][0]
@@ -231,23 +273,47 @@ def main():
     with open(PIDFILE, "w") as f:
         f.write(str(os.getpid()))
     global loop
+    Gst.init(None)
     loop = GLib.MainLoop()
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
     state = {}
 
-    def ready(fd, node):
-        pipe = build_pipeline(fd, node)
+    def stream(src):
+        pipe = build_pipeline(src)
         state["pipe"] = pipe
         b = pipe.get_bus()
         b.add_signal_watch()
         b.connect("message::error", lambda _b, m: (log(f"error: {m.parse_error()[0].message}"), loop.quit()))
         b.connect("message::eos", lambda *_: loop.quit())
+        if os.environ.get("LIVINGROOM_SHARE_DEBUG"):
+            # frames per second actually delivered by the screen capture
+            cnt = {"n": 0}
+            pipe.get_by_name("cap").get_static_pad("src").add_probe(
+                Gst.PadProbeType.BUFFER, lambda *_: (cnt.__setitem__("n", cnt["n"] + 1), Gst.PadProbeReturn.OK)[1])
+            GLib.timeout_add_seconds(1, lambda: (log(f"capture frames/s: {cnt['n']}"), cnt.__setitem__("n", 0), True)[2])
         pipe.set_state(Gst.State.PLAYING)
-        if EXTEND:
-            GLib.timeout_add(500, place_virtual_monitor)
         notify(("Living room is now an extra monitor" if EXTEND else "Sharing to the living room")
                + " — run it again to stop")
+
+    def ready(fd, node):
+        if not EXTEND:
+            stream(f"fd={fd} path={node}")
+            return
+        # The portal stream creates the virtual monitor; its size is whatever
+        # its consumer asks for (the living-room display's resolution). Its
+        # own frames are discarded (see MonitorRecording).
+        before = virtual_monitors()
+        keep = Gst.parse_launch(f"pipewiresrc fd={fd} path={node} "
+                                f"! video/x-raw,width={WIDTH},height={HEIGHT} "
+                                f"! fakesink sync=false")
+        state["keep"] = keep
+        keep.set_state(Gst.State.PLAYING)
+
+        def found(connector):
+            log(f"extra monitor is {connector}")
+            state["rec"] = MonitorRecording(connector, lambda n: stream(f"path={n}"))
+        GLib.timeout_add(500, place_virtual_monitor, before, found)
 
     cast = ScreenCast(bus, ready)
     for s in (signal.SIGINT, signal.SIGTERM):
@@ -256,8 +322,11 @@ def main():
     try:
         loop.run()
     finally:
-        if "pipe" in state:
-            state["pipe"].set_state(Gst.State.NULL)
+        for k in ("pipe", "keep"):
+            if k in state:
+                state[k].set_state(Gst.State.NULL)
+        if "rec" in state:
+            state["rec"].stop()
         cast.close()
         try:
             os.unlink(PIDFILE)

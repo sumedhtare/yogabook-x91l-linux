@@ -145,8 +145,17 @@
   `pipewiresrc`). Receiver decodes in software (~1 core for 1920x1200@30).
   Gotchas: (1) mutter only sends a frame when something changed (otherwise
   empty buffers that pipewiresrc drops: "Buffer is empty"), so a still
-  desktop sent nothing and the receiver timed out -> the capture is put on a
-  live 30 fps `compositor` canvas that repeats the last frame. (2) the
+  desktop sent nothing and the receiver timed out -> `pipewiresrc
+  keepalive-time=500` repeats the last frame, `videorate` makes 30 fps. (A
+  live `compositor` canvas for this silently discarded the late screen frames
+  and froze the picture.) (2) GNOME 50: the portal's virtual-monitor stream
+  only ever contains the wallpaper - windows on the virtual monitor are
+  missing, though frames arrive while they move. Recording the same monitor
+  with `org.gnome.Mutter.ScreenCast` RecordMonitor("Meta-N") shows everything,
+  so the portal stream is only kept (into a fakesink) to hold the virtual
+  monitor, and the picture comes from RecordMonitor (allowed for session
+  clients, no dialog). Verified by decoding a tablet-side pcap while changing
+  the wallpaper colour. (3) the
   virtual monitor ("Meta-0, Virtual remote monitor") is created but not added
   to the logical layout, so the pointer/windows can't reach it -> the sender
   places it right of the existing monitors via DisplayConfig
