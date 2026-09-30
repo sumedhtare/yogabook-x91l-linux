@@ -33,6 +33,11 @@ import threading
 import time
 
 CONF = os.environ.get("LIVINGROOM_CONF", "/etc/livingroom.conf")
+# Written by the dashboard's Screen panel; replaces screen/sleep_after/
+# wake_on/schedules from CONF. The status file tells the panel what is in
+# effect.
+OVERRIDE = os.path.expanduser("~/.config/livingroom/power.json")
+STATUS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "livingroom-power.json")
 DASHBOARD_APP_ID = "local.livingroom"
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 GRACE = 6          # s after the screen goes dark before sensors count
@@ -76,15 +81,24 @@ def hm(s):
 
 class Settings:
     def __init__(self):
-        self.mtime = None
+        self.mtimes = None
         self.load()
+
+    @staticmethod
+    def stamp():
+        out = []
+        for f in (CONF, OVERRIDE):
+            try:
+                out.append(os.path.getmtime(f))
+            except OSError:
+                out.append(None)
+        return out
 
     def load(self):
         c = {"screen": "auto", "sleep_after": "10", "wake_on": "camera light",
              "camera": "front", "camera_sensitivity": "3", "light_sensitivity": "30"}
         schedules = []
         try:
-            self.mtime = os.path.getmtime(CONF)
             with open(CONF) as f:
                 for n, line in enumerate(f, 1):
                     line = line.split("#", 1)[0].strip()
@@ -100,6 +114,25 @@ class Settings:
                         c[k] = v
         except OSError:
             pass
+        self.mtimes = self.stamp()
+        self.source = "file"
+        try:
+            with open(OVERRIDE) as f:
+                o = json.load(f)
+            c["screen"] = str(o.get("screen", c["screen"]))
+            c["sleep_after"] = str(o.get("sleep_after", c["sleep_after"]))
+            c["wake_on"] = " ".join(o.get("wake_on", [])) or "none"
+            schedules = []
+            for sc in o.get("schedules", []):
+                w = sc.get("wake_on")
+                schedules.append(({int(d) % 7 for d in sc["days"]}, hm(sc["start"]), hm(sc["end"]),
+                                  sc["mode"] if sc["mode"] in ("on", "auto", "sleep") else "auto",
+                                  None if w is None else set(w) & {"camera", "light"}))
+            self.source = "screen"
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            log(f"{OVERRIDE}: ignored ({e})")
         self.default = c["screen"] if c["screen"] in ("auto", "on", "sleep") else "auto"
         try:
             self.sleep_after = max(0.5, float(c["sleep_after"])) * 60
@@ -112,7 +145,7 @@ class Settings:
         self.cam_level = float(c["camera_sensitivity"]) / 100
         self.light_level = float(c["light_sensitivity"]) / 100
         self.schedules = schedules
-        log(f"settings: screen={self.default} sleep_after={self.sleep_after / 60:g}min "
+        log(f"settings ({self.source}): screen={self.default} sleep_after={self.sleep_after / 60:g}min "
             f"wake_on={','.join(sorted(self.wake_on)) or 'none'} schedules={len(schedules)}")
 
     @staticmethod
@@ -131,11 +164,17 @@ class Settings:
         return days, start, end, mode, wake
 
     def maybe_reload(self):
-        try:
-            if os.path.getmtime(CONF) != self.mtime:
-                self.load()
-        except OSError:
-            pass
+        if self.stamp() != self.mtimes:
+            self.load()
+
+    def export(self):
+        """The settings in the Screen panel's format."""
+        t = lambda m: f"{m // 60:02d}:{m % 60:02d}"
+        return {"screen": self.default, "sleep_after": round(self.sleep_after / 60, 1),
+                "wake_on": sorted(self.wake_on), "source": self.source,
+                "schedules": [{"days": sorted(d), "start": t(a), "end": t(b), "mode": m,
+                               "wake_on": None if w is None else sorted(w)}
+                              for d, a, b, m, w in self.schedules]}
 
     def now_mode(self):
         """(mode, wake sensors) for this moment."""
@@ -374,6 +413,7 @@ def main():
     last_wake = time.time()           # touch/sensor/connection/mode change
     dark_since = 0
     mode_prev = None
+    last_status = None
     tick = 0
     while True:
         tick += 1
@@ -415,6 +455,19 @@ def main():
                 last_wake = now
 
         want_on = mode == "on" or bool(busy) or now - last_wake < cfg.sleep_after
+        if busy or tick % 2 == 0:
+            status = json.dumps({"settings": cfg.export(), "mode": mode, "wake": sorted(wake),
+                                 "busy": busy, "screen_on": want_on,
+                                 "sleep_in": None if want_on is False or mode == "on" or busy
+                                 else max(0, round(cfg.sleep_after - (now - last_wake)))})
+            if status != last_status:
+                last_status = status
+                try:
+                    with open(STATUS + ".tmp", "w") as f:
+                        f.write(status)
+                    os.replace(STATUS + ".tmp", STATUS)
+                except OSError:
+                    pass
         if want_on != screen_on:
             try:
                 sway.power(want_on)

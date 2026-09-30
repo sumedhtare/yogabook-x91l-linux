@@ -129,8 +129,10 @@ or, on the tablet, `sudo livingroom/install.sh`.
   `livingroom-screen-rx` on the tablet (ports 5600/5602), which shows it full
   screen and returns to the dashboard 3 s after the stream stops. Click the
   launcher again (or `livingroom-share --stop`) to stop.
-- **Screen sleep / wake** (`livingroom-power`, settings in the "Screen power"
-  part of `/etc/livingroom.conf`, applied within a second): sleep after
+- **Screen sleep / wake** (`livingroom-power`): set on the display (tap →
+  🌙 Screen; saved in `~livingroom/.config/livingroom/power.json`, survives
+  reboots) or in the "Screen power" part of `/etc/livingroom.conf`; applied
+  within a second: sleep after
   `sleep_after` minutes without a touch, or always on, plus any number of
   `schedule = <days> <HH:MM>-<HH:MM> <on|auto|sleep> [wake_on=...]` lines. A
   dark screen wakes on touch and, per `wake_on`, on camera motion

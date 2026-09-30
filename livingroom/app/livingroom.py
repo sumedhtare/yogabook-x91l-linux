@@ -30,6 +30,10 @@ DLNA_PORT = 49494          # gmediarender -p (see livingroom-kiosk)
 RATE = 8000             # level only: a low rate is plenty and costs nothing
 HOP = 800               # 10 level updates/s
 STATE = os.path.expanduser("~/.config/livingroom/state.json")
+# Screen sleep settings from the Screen panel (read by livingroom-power) and
+# what livingroom-power reports back.
+POWER = os.path.expanduser("~/.config/livingroom/power.json")
+POWER_STATUS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "livingroom-power.json")
 SCENES = ("autumn", "snow", "sakura", "fireflies", "rain", "mountains")
 MY_PICTURES = os.path.expanduser("~/Pictures/Living Room")   # <scene>/*.jpg of your own
 
@@ -331,12 +335,39 @@ class App(Gtk.Application):
                 self.conf["theme"] = msg["theme"]
                 save_state(theme=msg["theme"])
                 log(f"theme -> {msg['theme']}")
+            if "power_get" in msg:
+                self.push_power()
+            if "power_set" in msg:
+                p = msg["power_set"]
+                clean = {"screen": p["screen"], "sleep_after": float(p["sleep_after"]),
+                         "wake_on": list(p["wake_on"]), "schedules": list(p["schedules"])}
+                os.makedirs(os.path.dirname(POWER), exist_ok=True)
+                # survives a crash or power cut: on disk before it replaces
+                # the old file
+                with open(POWER + ".tmp", "w") as f:
+                    json.dump(clean, f, indent=1)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(POWER + ".tmp", POWER)
+                dfd = os.open(os.path.dirname(POWER), os.O_RDONLY)
+                os.fsync(dfd)
+                os.close(dfd)
+                log(f"screen power -> {clean}")
+                # livingroom-power applies it within a second
+                GLib.timeout_add(1500, lambda: self.push_power() and False)
             if "weather" in msg:
                 self.conf["weather"] = msg["weather"]
                 save_state(weather=msg["weather"])
                 log(f"weather card -> {msg['weather']}")
         except Exception as e:
             log(f"message: {e}")
+
+    def push_power(self):
+        try:
+            with open(POWER_STATUS) as f:
+                self.push("power", json.load(f))
+        except (OSError, ValueError):
+            self.push("power", None)      # livingroom-power not running
 
     def push(self, kind, data):
         # called from worker threads: hop to the GTK main loop

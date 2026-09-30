@@ -104,6 +104,30 @@
   #picker button.on { background: rgba(255,255,255,0.14); color: var(--fg); }
   #picker .sep { width: 1px; margin: 1vh 0.4vw; background: rgba(255,255,255,0.15); }
 
+  /* ---- Screen panel (picker -> Screen): sleep settings ---- */
+  #screen { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 72vw; max-height: 90vh; overflow-y: auto; padding: 3.2vh 3vw;
+    border-radius: 3vh; background: rgba(14, 15, 22, 0.97); border: 1px solid rgba(255,255,255,0.12);
+    font-size: 2.4vh; color: var(--fg); box-shadow: 0 2vh 8vh rgba(0,0,0,0.6); }
+  #screen.hidden { display: none; }
+  #screen h2 { font-size: 3.6vh; font-weight: 400; margin-bottom: 2.4vh; display: flex; align-items: center; }
+  #screen h2 span { flex: 1; }
+  #screen .row { display: flex; align-items: center; gap: 1vw; margin: 1.8vh 0; flex-wrap: wrap; }
+  #screen .lbl { width: 13vw; color: var(--dim); }
+  #screen .note { color: var(--faint); font-size: 2vh; }
+  #screen button { all: unset; padding: 1.3vh 1.5vw; border-radius: 1.6vh; text-align: center;
+    background: rgba(255,255,255,0.07); color: var(--dim); min-width: 3vw; }
+  #screen button.on { background: rgba(120,160,255,0.32); color: var(--fg); }
+  #screen button.primary { background: rgba(120,160,255,0.45); color: var(--fg); }
+  #screen button.danger { color: #ff9b9b; }
+  #screen .val { min-width: 8vw; text-align: center; font-size: 3vh; font-variant-numeric: tabular-nums; }
+  #screen .sched { display: flex; align-items: center; gap: 1.2vw; padding: 1.4vh 1.2vw; margin: 1vh 0;
+    border-radius: 1.6vh; background: rgba(255,255,255,0.05); }
+  #screen .sched .what { flex: 1; }
+  #screen .sched .sub { color: var(--faint); font-size: 2vh; }
+  #screen .status { margin-top: 2.4vh; padding-top: 1.8vh; border-top: 1px solid rgba(255,255,255,0.1);
+    color: var(--dim); font-size: 2.1vh; }
+
   #hint { position: fixed; left: 0; right: 0; bottom: 2.4vh; text-align: center;
     font-size: 1.8vh; color: var(--faint); letter-spacing: 0.1em; transition: opacity 1.2s; }
 </style>
@@ -140,6 +164,7 @@
 </div>
 
 <div id="picker" class="hidden"></div>
+<div id="screen" class="hidden"></div>
 <div id="hint">Tap for scenes · Play music to “Living Room” over Bluetooth, AirPlay or Cast</div>
 
 <script>
@@ -405,7 +430,8 @@ function renderPicker() {
   const [wi, wn] = WEATHER_MODES[weatherMode];
   $("picker").innerHTML = THEMES.map(([id, icon, name]) =>
     `<button data-id="${id}" class="${id === choice ? "on" : ""}"><b>${icon}</b>${name}</button>`).join("") +
-    `<div class="sep"></div><button data-weather="1"><b>${wi}</b>${wn}</button>`;
+    `<div class="sep"></div><button data-weather="1"><b>${wi}</b>${wn}</button>` +
+    `<button data-screen="1"><b>🌙</b>Screen</button>`;
 }
 function showPicker() {
   renderPicker();
@@ -418,11 +444,19 @@ function showPicker() {
   }, 8000);
 }
 document.addEventListener("pointerdown", (e) => {
+  if (!$("screen").classList.contains("hidden")) {   // the Screen panel has its own buttons
+    if (!e.target.closest("#screen")) closeScreen();
+    return;
+  }
   const b = e.target.closest && e.target.closest("#picker button");
   try {   // tap log (livingroom.py journal) to debug touch mapping
     window.webkit.messageHandlers.lr.postMessage(JSON.stringify({ tap: [Math.round(e.clientX), Math.round(e.clientY),
       e.pointerType, b ? (b.dataset.id || "weather") : e.target.id || e.target.tagName] }));
   } catch (_) {}
+  if (b && b.dataset.screen && !$("picker").classList.contains("hidden")) {
+    openScreen();
+    return;
+  }
   if (b && b.dataset.weather && !$("picker").classList.contains("hidden")) {
     const order = Object.keys(WEATHER_MODES);
     setWeatherMode(order[(order.indexOf(weatherMode) + 1) % order.length]);
@@ -434,6 +468,153 @@ document.addEventListener("pointerdown", (e) => {
     applyTheme();
   }
   showPicker();
+});
+
+// ======================= Screen panel: sleep settings =======================
+// Settings go to livingroom.py (power_set -> ~/.config/livingroom/power.json),
+// which livingroom-power applies within a second; power_get returns what
+// livingroom-power has in effect.
+const DAYN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MODES = { auto: "Sleep when idle", on: "Always on", sleep: "Stay dark" };
+const STEPS = [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120];
+let power = null, pstatus = null, editing = null, wantSettings = false, screenTimer = 0, statusTimer = 0;
+const post = (m) => { try { window.webkit.messageHandlers.lr.postMessage(JSON.stringify(m)); } catch (_) {} };
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const toggle = (list, v) => list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+
+function openScreen() {
+  $("picker").classList.add("hidden");
+  editing = null; wantSettings = true;
+  post({ power_get: 1 });
+  $("screen").classList.remove("hidden");
+  renderScreen(); poke();
+  clearInterval(statusTimer);
+  statusTimer = setInterval(() => post({ power_get: 1 }), 5000);
+}
+function closeScreen() {
+  $("screen").classList.add("hidden");
+  editing = null;
+  clearInterval(statusTimer);
+}
+function poke() { clearTimeout(screenTimer); screenTimer = setTimeout(closeScreen, 90000); }
+function addMin(t, d) {
+  const [h, m] = t.split(":").map(Number);
+  const x = ((h * 60 + m + d) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+}
+function daysText(d) {
+  const k = d.slice().sort().join("");
+  if (k === "0123456") return "Every day";
+  if (k === "01234") return "Weekdays";
+  if (k === "56") return "Weekends";
+  const s = d.slice().sort((a, b) => a - b);
+  if (s.length > 2 && s[s.length - 1] - s[0] === s.length - 1) return `${DAYN[s[0]]}–${DAYN[s[s.length - 1]]}`;
+  return s.map((i) => DAYN[i]).join(", ");
+}
+function wakeText(w) {
+  return !w || !w.length ? "touch only" : "touch, " + w.map((x) => x === "camera" ? "motion" : "light").join(", ");
+}
+function fmtDur(s) { return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`; }
+function statusText() {
+  const s = pstatus;
+  if (!s) return "The screen power service isn't running.";
+  if (s.busy && s.busy.length) return `Now: staying on — ${s.busy.join(", ")} connected.`;
+  let t = "Now: " + { on: "always on", auto: "sleeps when idle", sleep: "stays dark" }[s.mode];
+  if (s.mode !== "on") t += ` · wakes on ${wakeText(s.wake)}`;
+  if (s.screen_on && s.sleep_in != null) t += ` · sleeps in ${fmtDur(s.sleep_in)}`;
+  if (s.settings.source === "file") t += " · (settings from /etc/livingroom.conf until you change them here)";
+  return t;
+}
+function wakeBtns(w, a) {
+  return [["camera", "📷 Motion"], ["light", "💡 Light"]].map(([k, n]) =>
+    `<button data-a="${a}" data-v="${k}" class="${w && w.includes(k) ? "on" : ""}">${n}</button>`).join("");
+}
+function timeRow(label, key, v) {
+  return `<div class="row"><span class="lbl">${label}</span>` +
+    `<button data-a="t" data-k="${key}" data-v="-60">−1 h</button><button data-a="t" data-k="${key}" data-v="-15">−15 m</button>` +
+    `<span class="val">${v}</span>` +
+    `<button data-a="t" data-k="${key}" data-v="15">+15 m</button><button data-a="t" data-k="${key}" data-v="60">+1 h</button></div>`;
+}
+function renderScreen() {
+  const el = $("screen");
+  if (!power) {
+    el.innerHTML = `<h2><span>🌙 Screen</span><button class="primary" data-a="close">Done</button></h2>` +
+      `<div class="note">${pstatus === null && !wantSettings ? statusText() : "Loading…"}</div>`;
+    return;
+  }
+  if (editing) return renderEditor();
+  el.innerHTML = `
+    <h2><span>🌙 Screen</span><button class="primary" data-a="close">Done</button></h2>
+    <div class="row"><span class="lbl">Normally</span>${Object.entries(MODES).map(([k, n]) =>
+      `<button data-a="mode" data-v="${k}" class="${power.screen === k ? "on" : ""}">${n}</button>`).join("")}</div>
+    <div class="row"><span class="lbl">Sleep after</span><button data-a="after" data-v="-1">−</button>
+      <span class="val">${power.sleep_after} min</span><button data-a="after" data-v="1">+</button>
+      <span class="note">without a touch (also how long it stays on after waking)</span></div>
+    <div class="row"><span class="lbl">Wake up on</span>${wakeBtns(power.wake_on, "wake")}
+      <span class="note">a touch always wakes it</span></div>
+    <div class="row"><span class="lbl">Schedules</span>
+      <span class="note">replace “Normally” while they run; if two overlap, the lower one wins</span></div>
+    ${power.schedules.map((sc, i) => `<div class="sched"><div class="what">${daysText(sc.days)} · ${sc.start} – ${sc.end}
+      <div class="sub">${MODES[sc.mode]}${sc.mode === "sleep" ? " · wakes on " + wakeText(sc.wake_on) : ""}</div></div>
+      <button data-a="edit" data-v="${i}">Edit</button></div>`).join("") || `<div class="note">No schedules yet.</div>`}
+    <div class="row"><button data-a="add">+ Add schedule</button></div>
+    <div class="status">${statusText()}<br>It never sleeps while a phone, AirPlay/Cast sender or laptop screen is connected.</div>`;
+}
+function renderEditor() {
+  const e = editing.s;
+  const next = e.end <= e.start ? `<span class="note">ends the next day</span>` : "";
+  $("screen").innerHTML = `
+    <h2><span>${editing.i < 0 ? "New schedule" : "Edit schedule"}</span>
+      <button data-a="cancel">Cancel</button>&nbsp;&nbsp;<button class="primary" data-a="save">Save</button></h2>
+    <div class="row"><span class="lbl">Days</span>${DAYN.map((d, i) =>
+      `<button data-a="day" data-v="${i}" class="${e.days.includes(i) ? "on" : ""}">${d}</button>`).join("")}</div>
+    <div class="row"><span class="lbl"></span><button data-a="days" data-v="0123456">Every day</button>
+      <button data-a="days" data-v="01234">Weekdays</button><button data-a="days" data-v="56">Weekends</button></div>
+    ${timeRow("From", "start", e.start)}
+    ${timeRow("To", "end", e.end).replace("</div>", next + "</div>")}
+    <div class="row"><span class="lbl">Screen</span>${Object.entries(MODES).map(([k, n]) =>
+      `<button data-a="smode" data-v="${k}" class="${e.mode === k ? "on" : ""}">${n}</button>`).join("")}</div>
+    ${e.mode === "sleep" ? `<div class="row"><span class="lbl">Wake up on</span>${wakeBtns(e.wake_on || [], "swake")}
+      <span class="note">a touch always wakes it</span></div>` : ""}
+    ${!e.days.length ? `<div class="note">Pick at least one day.</div>` : ""}
+    ${editing.i >= 0 ? `<div class="row" style="margin-top:3vh"><button class="danger" data-a="del">Delete schedule</button></div>` : ""}`;
+}
+$("screen").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  poke();
+  if (!b) return;
+  const a = b.dataset.a, v = b.dataset.v;
+  if (a === "close") return closeScreen();
+  if (editing) {
+    const e = editing.s;
+    if (a === "cancel") editing = null;
+    else if (a === "save") {
+      if (!e.days.length) return;
+      if (e.mode !== "sleep") e.wake_on = null;      // uses "Wake up on" above
+      if (editing.i < 0) power.schedules.push(e); else power.schedules[editing.i] = e;
+      editing = null;
+      post({ power_set: power });
+    } else if (a === "del") {
+      power.schedules.splice(editing.i, 1);
+      editing = null;
+      post({ power_set: power });
+    } else if (a === "day") e.days = toggle(e.days, +v).sort();
+    else if (a === "days") e.days = [...v].map(Number);
+    else if (a === "t") e[b.dataset.k] = addMin(e[b.dataset.k], +v);
+    else if (a === "smode") { e.mode = v; if (v === "sleep" && !e.wake_on) e.wake_on = []; }
+    else if (a === "swake") e.wake_on = toggle(e.wake_on || [], v);
+  } else {
+    if (a === "mode") power.screen = v;
+    else if (a === "after") {
+      let i = STEPS.findIndex((x) => x >= power.sleep_after);
+      if (i < 0) i = STEPS.length - 1;
+      power.sleep_after = STEPS[Math.max(0, Math.min(STEPS.length - 1, i + +v))];
+    } else if (a === "wake") power.wake_on = toggle(power.wake_on, v);
+    else if (a === "add") editing = { i: -1, s: { days: [0, 1, 2, 3, 4, 5, 6], start: "23:00", end: "07:00", mode: "sleep", wake_on: [] } };
+    else if (a === "edit") editing = { i: +v, s: clone(power.schedules[+v]) };
+    if (["mode", "after", "wake"].includes(a)) post({ power_set: power });
+  }
+  renderScreen();
 });
 
 // ======================= now playing =======================
@@ -469,6 +650,14 @@ window.lr = (kind, data) => {
   if (kind === "level") level(data);
   else if (kind === "weather") weather(data);
   else if (kind === "nowplaying") nowplaying(data);
+  else if (kind === "power") {
+    pstatus = data;
+    if (data && (wantSettings || !power)) {
+      power = clone(data.settings); delete power.source;
+    }
+    wantSettings = false;
+    if (!$("screen").classList.contains("hidden") && !editing) renderScreen();
+  }
   else if (kind === "config") {
     clock24 = data.clock24; choice = data.theme || "auto"; scenes = data.scenes || {};
     setWeatherMode(data.weather);
