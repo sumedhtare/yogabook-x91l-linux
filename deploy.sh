@@ -28,10 +28,10 @@ ssh -o BatchMode=yes "$HOST" true 2>/dev/null || ssh-copy-id "$HOST"
 
 ssh "$HOST" 'rm -rf ~/yogabook-setup && mkdir -p ~/yogabook-setup/debs'
 scp -rq "$HERE/tablet" "$HOST:yogabook-setup/"
-[[ -n ${LIVINGROOM:-} ]] && scp -rq "$HERE/livingroom" "$HOST:yogabook-setup/"
+if [[ -n ${LIVINGROOM:-} ]]; then scp -rq "$HERE/livingroom" "$HOST:yogabook-setup/"; fi
 scp -q "$DEBDIR"/linux-image-7.2.8-yogabook-cam+_*.deb \
        "$DEBDIR"/linux-headers-7.2.8-yogabook-cam+_*.deb "$HOST:yogabook-setup/debs/"
 ssh -t "$HOST" "sudo APN='${APN:-}' APN_NAME='${APN_NAME:-}' \
   ~/yogabook-setup/tablet/install.sh ~/yogabook-setup/debs"
-[[ -n ${LIVINGROOM:-} ]] && ssh -t "$HOST" "sudo ~/yogabook-setup/livingroom/install.sh"
+if [[ -n ${LIVINGROOM:-} ]]; then ssh -t "$HOST" "sudo ~/yogabook-setup/livingroom/install.sh"; fi
 echo "Done. Reboot the tablet: ssh $HOST sudo reboot"
