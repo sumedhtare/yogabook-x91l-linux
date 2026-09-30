@@ -13,7 +13,7 @@ and small helper services. Builds on
 | Touchscreen, pen, Wi-Fi, battery, kbd backlight | ✅ | upstream |
 | Front + rear camera | ✅ | camera patch series + AtomISP + on-demand webcam bridge with white balance |
 | LTE modem (XMM7260) | ⚠️ 2G/EDGE only | modem RFC patches + xHCI kept awake |
-| Bluetooth | ⚠️ | works without firmware patch file (`BCM4356A2.hcd` not available) |
+| Bluetooth | ✅ | firmware patch from Lenovo's Windows driver (`BCM4356A2.hcd`) |
 | Suspend/resume with modem/camera | ❓ untested | |
 
 ## Replay from scratch

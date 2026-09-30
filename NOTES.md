@@ -80,7 +80,12 @@
 
 - `cherryview-pinctrl INT33FF:04 probe failed -61`, `intel-hid failed to
   enable HID power button`: harmless.
-- Bluetooth wants `brcm/BCM4356A2.hcd`; no known-good UART version exists.
+- Bluetooth firmware patch `brcm/BCM4356A2.hcd` (installed from `tablet/files`)
+  = `BCM4356A2_001.003.015.0102.0307.hcd` from Lenovo's Windows Bluetooth driver
+  (`yoga_book_bluetooth_201702.zip`, DS119810; `BtwSerialBus.inf` maps
+  `ACPI\BCM2E8A` -> this file for Windows 10). Loads as "BCM4356 37.4MHz Lenovo
+  Yeti-0102 build 0307". Without it, A2DP audio was choppy/robotic (no
+  Wi-Fi/BT coexistence tuning; the Wi-Fi is on 2.4 GHz).
 - jekhor's kernel 6.17.4-yogabook1 can stay installed as a fallback (sound
   works there too; cameras/modem don't).
 
