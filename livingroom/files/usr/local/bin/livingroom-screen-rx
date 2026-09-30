@@ -3,6 +3,8 @@
 # video over RTP/UDP 5600 and Opus audio over RTP/UDP 5602. The window only
 # exists while a stream is coming in; 3 s after it stops the pipeline is torn
 # down (the dashboard comes back) and it waits for the next one.
+# Never drop encoded data (that corrupts everything up to the next keyframe:
+# a grey screen); if the Atom falls behind, drop decoded frames instead.
 import os
 import sys
 
@@ -14,13 +16,16 @@ from gi.repository import GLib, Gst  # noqa: E402
 VIDEO_PORT, AUDIO_PORT = 5600, 5602
 # Software decoding: the Cherry Trail VA-API decoder is unreliable with some
 # streams (black frames without an error); override with LIVINGROOM_RX_DECODER.
-DECODER = os.environ.get("LIVINGROOM_RX_DECODER", "avdec_h264 max-threads=4")
+DECODER = os.environ.get("LIVINGROOM_RX_DECODER",
+                         "avdec_h264 max-threads=4 output-corrupt=false")
 
 PIPELINE = f"""
   udpsrc name=vsrc port={VIDEO_PORT} timeout=3000000000 buffer-size=4194304
       caps="application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000"
-    ! rtpjitterbuffer latency=80 drop-on-latency=true
-    ! rtph264depay ! h264parse ! {DECODER}
+    ! rtpjitterbuffer latency=150
+    ! rtph264depay ! h264parse ! queue max-size-time=500000000
+    ! {DECODER}
+    ! queue leaky=downstream max-size-buffers=2
     ! videoconvert ! waylandsink sync=false
   udpsrc port={AUDIO_PORT} buffer-size=1048576
       caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=97,clock-rate=48000"
