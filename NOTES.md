@@ -92,6 +92,12 @@
   domain set (`/etc/modprobe.d/cfg80211-regdom.conf`, IN): with the default
   world domain 5 GHz channels are passive-scan only. The Windows Wi-Fi
   driver (yoga_book_wifi_201707.zip) has no NVRAM/btc settings to borrow.
+  5 GHz alone was not enough: what fixed it was
+  `livingroom/files/etc/wireplumber/wireplumber.conf.d/51-livingroom-audio.conf`
+  — SST speaker `api.alsa.headroom = 2048` (was 0; the sink's ERR count kept
+  climbing) and `node.latency = 4096/48000` for `bluez_input.*`. After a
+  Bluetooth firmware/driver reload, restart WirePlumber in the kiosk session
+  and re-pair the phone.
 - jekhor's kernel 6.17.4-yogabook1 can stay installed as a fallback (sound
   works there too; cameras/modem don't).
 
