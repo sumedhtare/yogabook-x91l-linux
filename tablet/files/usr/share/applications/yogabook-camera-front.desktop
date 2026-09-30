@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Use Front Camera
+Comment=Make "Yoga Book Camera" use the front camera
+Exec=sh -c 'echo front > /var/lib/yogabook-webcam/camera'
+Icon=camera-web
+Categories=AudioVideo;Video;

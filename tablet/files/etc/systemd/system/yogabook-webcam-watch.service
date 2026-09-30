@@ -1,0 +1,10 @@
+[Unit]
+Description=Yoga Book on-demand webcam (/dev/video10, "Yoga Book Camera")
+After=systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/yogabook-webcam-watch
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

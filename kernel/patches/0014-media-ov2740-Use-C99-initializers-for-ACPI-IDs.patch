@@ -1,0 +1,33 @@
+From de9243cec4252fad1d6f142123c9ddd35ab9298f Mon Sep 17 00:00:00 2001
+From: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Date: Wed, 2 Sep 2026 16:53:32 +0200
+Subject: [PATCH 14/32] media: ov2740: Use C99 initializers for ACPI IDs
+
+Use designated initializers and the standard empty sentinel style
+before adding firmware IDs.
+
+Suggested-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+Reviewed-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+Assisted-by: LLM sparse
+Signed-off-by: Maurizio Casciano <mauriziocasciano7@gmail.com>
+---
+ drivers/media/i2c/ov2740.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/i2c/ov2740.c b/drivers/media/i2c/ov2740.c
+index fb590dfad..ae7dbc559 100644
+--- a/drivers/media/i2c/ov2740.c
++++ b/drivers/media/i2c/ov2740.c
+@@ -1460,10 +1460,9 @@ static DEFINE_RUNTIME_DEV_PM_OPS(ov2740_pm_ops, ov2740_suspend, ov2740_resume,
+ 				 NULL);
+ 
+ static const struct acpi_device_id ov2740_acpi_ids[] = {
+-	{"INT3474"},
+-	{}
++	{ .id = "INT3474" },
++	{ }
+ };
+-
+ MODULE_DEVICE_TABLE(acpi, ov2740_acpi_ids);
+ 
+ static struct i2c_driver ov2740_i2c_driver = {

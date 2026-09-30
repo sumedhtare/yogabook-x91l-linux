@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Use Rear Camera
+Comment=Make "Yoga Book Camera" use the rear camera
+Exec=sh -c 'echo rear > /var/lib/yogabook-webcam/camera'
+Icon=camera-web
+Categories=AudioVideo;Video;

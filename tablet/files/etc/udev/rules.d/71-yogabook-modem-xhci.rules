@@ -1,0 +1,9 @@
+# Yoga Book X91L: the XMM7260 LTE modem sits on the Cherry Trail xHCI SSIC
+# port. If xHCI runtime-suspends before the modem finishes its ~50 s boot
+# (8087:07ef -> 8087:0911), SSIC link training stops and the modem never
+# appears. Keep the controller awake.
+ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:00:14.0", ATTR{vendor}=="0x8086", ATTR{device}=="0x22b5", ATTR{power/control}="on"
+# The root hubs must stay awake too, or the modem's re-enumeration as the MBIM
+# device (8087:0911) is never detected on the SSIC port.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1d6b", DEVPATH=="*/0000:00:14.0/usb[0-9]*", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="8087", ATTR{idProduct}=="07ef|0911", ATTR{power/control}="on"

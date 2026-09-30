@@ -1,0 +1,216 @@
+#!/usr/bin/python3
+# On-demand webcam for the Yoga Book: keep /dev/video10 ("Yoga Book Camera",
+# v4l2loopback) visible to apps, and run the camera pipeline
+# (/usr/local/bin/yogabook-webcam) only while some app has the device open.
+#
+# v4l2loopback (exclusive_caps=1) only offers capture formats while a writer
+# is attached, and rejects a second writer, so this process is the one and
+# only writer: it holds the output side open, writes a placeholder frame, and
+# copies the pipeline's frames into the device while the camera is on.
+# v4l2loopback cannot notify a writer about readers, so wait for inotify
+# open/close events on the device node and look in /proc for openers.
+import ctypes
+import fcntl
+import os
+import select
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+DEV = "/dev/video10"
+PIPELINE = "/usr/local/bin/yogabook-webcam"
+PREF = "/var/lib/yogabook-webcam/camera"
+POLL = 1.0          # seconds between checks while the camera is on
+STOP_AFTER = 10     # idle polls before switching the camera off
+
+W, H = 1280, 720
+FRAME = W * H * 2   # YUYV
+V4L2_BUF_TYPE_VIDEO_OUTPUT = 2
+V4L2_PIX_FMT_YUYV = int.from_bytes(b"YUYV", "little")
+VIDIOC_S_FMT = 0xc0d05605
+
+IN_OPEN = 0x020
+IN_CLOSE = 0x008 | 0x010
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def inotify_dev():
+    fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0 or _libc.inotify_add_watch(fd, DEV.encode(), IN_OPEN | IN_CLOSE) < 0:
+        raise OSError(ctypes.get_errno(), "inotify on " + DEV)
+    return fd
+
+
+def drain(fd):
+    try:
+        while os.read(fd, 4096):
+            pass
+    except BlockingIOError:
+        pass
+
+
+def readers(rdev):
+    """PIDs other than us holding the device open."""
+    found = set()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    st = os.stat(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if st.st_rdev == rdev and (st.st_mode & 0o170000) == 0o020000:
+                    found.add(int(pid))
+                    break
+        except OSError:
+            continue
+    return found
+
+
+def camera():
+    try:
+        with open(PREF) as f:
+            cam = f.read().strip()
+        return cam if cam in ("front", "rear") else "front"
+    except OSError:
+        return "front"
+
+
+class Device:
+    """The held output side of /dev/video10."""
+
+    def __init__(self):
+        self.placeholder_frame = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+             f"color=c=0x202020:s={W}x{H},drawtext=text='Starting camera...':"
+             "fontcolor=white:fontsize=48:x=(w-tw)/2:y=(h-th)/2",
+             "-frames:v", "1", "-pix_fmt", "yuyv422", "-f", "rawvideo", "-"],
+            check=True, stdout=subprocess.PIPE).stdout
+        self.fd = os.open(DEV, os.O_RDWR | os.O_CLOEXEC)
+        # struct v4l2_format: u32 type, pad to 8, v4l2_pix_format, rest of union
+        pix = struct.pack("12I", W, H, V4L2_PIX_FMT_YUYV, 1, W * 2, FRAME,
+                          8, 0, 0, 0, 0, 0)  # field NONE, colorspace SRGB
+        fmt = struct.pack("I4x", V4L2_BUF_TYPE_VIDEO_OUTPUT) + pix
+        fmt += bytes(208 - len(fmt))
+        fcntl.ioctl(self.fd, VIDIOC_S_FMT, bytearray(fmt))
+        self.placeholder()
+
+    def placeholder(self):
+        # v4l2loopback replays the last frame to new readers: make it this
+        # rather than the last camera image.
+        os.write(self.fd, self.placeholder_frame)
+
+    def write(self, frame):
+        os.write(self.fd, frame)
+
+
+class Camera:
+    """The capture pipeline, writing raw 1280x720 YUYV frames to stdout."""
+
+    def __init__(self, dev, cam):
+        self.cam = cam
+        self.proc = subprocess.Popen([PIPELINE, cam], stdout=subprocess.PIPE,
+                                     env={**os.environ, "YB_WEBCAM_OUT": "-"},
+                                     start_new_session=True)
+        self.thread = threading.Thread(target=self._copy, args=(dev,),
+                                       daemon=True)
+        self.thread.start()
+
+    def _copy(self, dev):
+        out = self.proc.stdout
+        while True:
+            frame = out.read(FRAME)
+            if len(frame) < FRAME:
+                break
+            dev.write(frame)
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    def stop(self):
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+            self.proc.wait()
+        self.thread.join(timeout=5)
+
+
+def main():
+    os.makedirs(os.path.dirname(PREF), exist_ok=True)
+    if not os.path.exists(PREF):
+        with open(PREF, "w") as f:
+            f.write("front\n")
+    os.chmod(PREF, 0o666)
+
+    while not os.path.exists(DEV):
+        time.sleep(POLL)
+    dev = Device()
+    rdev = os.stat(DEV).st_rdev
+
+    # With a writer attached the device now announces CAPTURE only, but udev
+    # probed it earlier as output-only: re-probe so GStreamer and PipeWire
+    # list it (PipeWire ignores "change", hence remove + add).
+    for action in ("remove", "add"):
+        subprocess.run(["udevadm", "trigger", f"--action={action}", DEV],
+                       check=False)
+        time.sleep(1)
+
+    # The first capture after boot is slow (AtomISP/CSS bring-up); do it now
+    # instead of making the first app wait.
+    subprocess.Popen(["timeout", "90", "v4l2-ctl", "-d", "/dev/video0",
+                      "--stream-mmap", "--stream-count=1",
+                      "--stream-to=/dev/null"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    ino = inotify_dev()
+    cam = None
+    idle = 0
+    last_start = 0.0
+    who = set()
+    while True:
+        on = cam is not None and cam.alive()
+        # Nothing happening: sleep until something opens the device.
+        # Camera on or apps reading: poll.
+        ready, _, _ = select.select([ino], [], [], POLL if on or who else None)
+        if ready:
+            drain(ino)
+            if not on:
+                time.sleep(POLL)   # let short probes (PipeWire etc.) finish
+
+        who = readers(rdev)
+        idle = 0 if who else idle + 1
+        want = camera()
+        on = cam is not None and cam.alive()
+
+        if who and (not on or want != cam.cam) and time.monotonic() - last_start > 10:
+            if cam is not None:
+                cam.stop()
+            log(f"reader(s) {sorted(who)}: starting {want} camera")
+            cam = Camera(dev, want)
+            last_start = time.monotonic()
+        elif cam is not None and (idle >= STOP_AFTER or not on):
+            log("no readers: stopping camera" if on else "camera pipeline exited")
+            cam.stop()
+            cam = None
+            dev.placeholder()
+            drain(ino)
+            idle = 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

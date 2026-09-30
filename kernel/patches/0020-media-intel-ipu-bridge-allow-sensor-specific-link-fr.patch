@@ -1,0 +1,61 @@
+From e8782aaf6f09e1965f7a2ee926d6b5cf7f2166a6 Mon Sep 17 00:00:00 2001
+From: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Date: Wed, 2 Sep 2026 16:53:38 +0200
+Subject: [PATCH 20/32] media: intel: ipu-bridge: allow sensor-specific link
+ frequencies
+
+A bridge-specific firmware parser may have more accurate link-frequency
+information than the generic ACPI hardware-ID table. Let it store link
+frequencies in the per-sensor bridge data and prefer those values when
+constructing the endpoint software node.
+
+Existing bridges continue to use the hardware-ID table when no
+sensor-specific frequencies are supplied.
+
+Signed-off-by: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Assisted-by: LLM sparse
+---
+ drivers/media/pci/intel/ipu-bridge.c | 15 ++++++++++-----
+ include/media/ipu-bridge.h           |  3 +++
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/media/pci/intel/ipu-bridge.c b/drivers/media/pci/intel/ipu-bridge.c
+index 7d2d6dcd6..59e07f9f1 100644
+--- a/drivers/media/pci/intel/ipu-bridge.c
++++ b/drivers/media/pci/intel/ipu-bridge.c
+@@ -485,11 +485,16 @@ static void ipu_bridge_create_fwnode_properties(
+ 					sensor->prop_names.remote_endpoint,
+ 					sensor->local_ref);
+ 
+-	if (cfg->nr_link_freqs > 0)
+-		sensor->ep_properties[3] = PROPERTY_ENTRY_U64_ARRAY_LEN(
+-			sensor->prop_names.link_frequencies,
+-			cfg->link_freqs,
+-			cfg->nr_link_freqs);
++	if (sensor->nr_link_freqs > 0)
++		sensor->ep_properties[3] =
++			PROPERTY_ENTRY_U64_ARRAY_LEN(names->link_frequencies,
++						     sensor->link_freqs,
++						     sensor->nr_link_freqs);
++	else if (cfg->nr_link_freqs > 0)
++		sensor->ep_properties[3] =
++			PROPERTY_ENTRY_U64_ARRAY_LEN(names->link_frequencies,
++						     cfg->link_freqs,
++						     cfg->nr_link_freqs);
+ 
+ 	sensor->ipu_properties[0] = PROPERTY_ENTRY_U32_ARRAY_LEN(
+ 					sensor->prop_names.data_lanes,
+diff --git a/include/media/ipu-bridge.h b/include/media/ipu-bridge.h
+index 16fac7654..81645a5f8 100644
+--- a/include/media/ipu-bridge.h
++++ b/include/media/ipu-bridge.h
+@@ -133,6 +133,9 @@ struct ipu_sensor {
+ 	struct software_node swnodes[SWNODE_COUNT];
+ 	struct ipu_node_names node_names;
+ 
++	u64 link_freqs[MAX_NUM_LINK_FREQS];
++	u8 nr_link_freqs;
++
+ 	u8 link;
+ 	u8 lanes;
+ 	u32 mclkspeed;

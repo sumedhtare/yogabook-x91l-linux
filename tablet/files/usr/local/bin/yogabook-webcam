@@ -1,0 +1,32 @@
+#!/bin/bash
+# Bridge the Yoga Book AtomISP camera (/dev/video0: fixed size, padded rows,
+# no auto-exposure) to a normal 1280x720 webcam on /dev/video10 (v4l2loopback)
+# so Cheese/Firefox/Zoom can use it.
+# Usage: yogabook-webcam front|rear [analogue_gain]
+# Normally run on demand by yogabook-webcam-watch with YB_WEBCAM_OUT=- (raw
+# 1280x720 YUYV frames on stdout); otherwise writes to /dev/video10.
+set -euo pipefail
+
+cam=${1:-front}
+gain=${2:-}
+case "$cam" in
+  front) in=0; w=1916; h=1076; sub=ov2740; crop="1916:1076:0:0"; g=${gain:-1900} ;;
+  rear)  in=1; w=1616; h=1208; sub=ov8858; crop="1616:909:0:149"; g=${gain:-1900} ;;
+  *) echo "usage: $0 front|rear [analogue_gain]" >&2; exit 2 ;;
+esac
+
+# Starting sensor gain; yogabook-capture's auto exposure takes over from here.
+# White balance is done on the ISP, so leave the sensor's own gains neutral.
+for s in /sys/class/video4linux/v4l-subdev*; do
+  if [[ "$(cat "$s/name")" == "$sub"* ]]; then
+    v4l2-ctl -d "/dev/$(basename "$s")" \
+      -c analogue_gain="$g",red_balance=1024,blue_balance=1024 2>/dev/null || true
+  fi
+done
+
+# yogabook-capture streams /dev/video0, drops the row padding and runs white
+# balance (ISP gains) and auto exposure (sensor) while it streams.
+/usr/local/bin/yogabook-capture "$cam" |
+ffmpeg -loglevel error -f rawvideo -pix_fmt yuyv422 -s ${w}x$h -i - \
+  -vf "crop=$crop,scale=1280:720" -pix_fmt yuyv422 \
+  $([[ "${YB_WEBCAM_OUT:-}" == - ]] && echo "-f rawvideo -" || echo "-f v4l2 /dev/video10")

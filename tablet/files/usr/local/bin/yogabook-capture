@@ -1,0 +1,251 @@
+#!/usr/bin/python3
+# Capture YUYV frames from the Yoga Book AtomISP (/dev/video0) and write them
+# to stdout without the row padding, while running a minimal 3A: grey-world
+# white balance on the ISP's white-balance gains (the sensor data is Bayer
+# and nothing else white balances it) and auto exposure on the sensor.
+#
+# Usage: yogabook-capture front|rear      (frames: W*H*2 bytes each on stdout,
+#                                          front 1916x1076, rear 1616x1208)
+#        yogabook-capture front --probe   (print ISP WB/OB while streaming)
+import fcntl
+import mmap
+import os
+import struct
+import sys
+
+VIDEO = "/dev/video0"
+CAMS = {  # input, width, height, sensor subdev name, sensor control limits
+    "front": (0, 1916, 1076, "ov2740",
+              {"exp": (4, 1768), "again": (128, 1983), "dgain": (1024, 2048)},
+              (1.80, 1.78)),
+    "rear": (1, 1616, 1208, "ov8858",
+             {"exp": (4, 2468), "again": (128, 2047), "dgain": (512, 1024)},
+             (1.60, 1.60)),
+}
+
+# ioctls (x86_64)
+VIDIOC_G_FMT, VIDIOC_S_FMT = 0xc0d05604, 0xc0d05605
+VIDIOC_REQBUFS, VIDIOC_QUERYBUF = 0xc0145608, 0xc0585609
+VIDIOC_QBUF, VIDIOC_DQBUF = 0xc058560f, 0xc0585611
+VIDIOC_STREAMON, VIDIOC_STREAMOFF = 0x40045612, 0x40045613
+VIDIOC_S_INPUT = 0xc0045627
+VIDIOC_G_CTRL, VIDIOC_S_CTRL = 0xc008561b, 0xc008561c
+ATOMISP_G_WB, ATOMISP_S_WB = 0x801476d0, 0x401476d0
+ATOMISP_G_OB, ATOMISP_S_OB = 0x801876c4, 0x401876c4
+
+CAPTURE, MMAP = 1, 1
+YUYV = int.from_bytes(b"YUYV", "little")
+CID_RED, CID_BLUE = 0x0098090e, 0x0098090f
+CID_EXPOSURE, CID_AGAIN, CID_DGAIN = 0x00980911, 0x009e0903, 0x009f0905
+NBUF = 4
+
+
+def log(msg):
+    print(f"yogabook-capture: {msg}", file=sys.stderr, flush=True)
+
+
+def ioctl(fd, req, buf):
+    fcntl.ioctl(fd, req, buf)
+    return buf
+
+
+class Sensor:
+    def __init__(self, name):
+        self.fd = None
+        for sd in sorted(os.listdir("/sys/class/video4linux")):
+            try:
+                with open(f"/sys/class/video4linux/{sd}/name") as f:
+                    if f.read().startswith(name):
+                        self.fd = os.open(f"/dev/{sd}", os.O_RDWR | os.O_CLOEXEC)
+                        break
+            except OSError:
+                pass
+
+    def get(self, cid):
+        return struct.unpack("Ii", ioctl(self.fd, VIDIOC_G_CTRL,
+                                         bytearray(struct.pack("Ii", cid, 0))))[1]
+
+    def set(self, cid, value):
+        ioctl(self.fd, VIDIOC_S_CTRL, bytearray(struct.pack("Ii", cid, int(value))))
+
+
+class ISP:
+    def __init__(self, fd):
+        self.fd = fd
+
+    def get_wb(self):
+        return struct.unpack("5I", ioctl(self.fd, ATOMISP_G_WB, bytearray(20)))
+
+    def set_wb(self, bits, gr, r, b, gb):
+        ioctl(self.fd, ATOMISP_S_WB, bytearray(struct.pack("5I", bits, gr, r, b, gb)))
+
+    def set_ob(self, level):
+        ioctl(self.fd, ATOMISP_S_OB,
+              bytearray(struct.pack("5I2H", 0, level, level, level, level, 0, 0)))
+
+    def get_ob(self):
+        return struct.unpack("5I2H", ioctl(self.fd, ATOMISP_G_OB, bytearray(24)))
+
+
+class ThreeA:
+    """Grey-world white balance on the ISP gains, auto exposure on the sensor."""
+
+    Y_TARGET = 105
+    EVERY = 8                   # frames between adjustments
+    WB_MIN, WB_MAX = 0.5, 1.99  # ISP gains are 1.15 fixed point
+
+    def __init__(self, isp, sensor, lim, wb):
+        self.isp, self.sensor, self.lim = isp, sensor, lim
+        self.r, self.b = wb   # typical gains for this sensor (raw R/G, B/G)
+        self.n = 0
+        self.apply_wb()
+
+    def apply_wb(self):
+        one = 1 << 15
+        self.isp.set_wb(1, one, int(self.r * one), int(self.b * one), one)
+
+    @staticmethod
+    def clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    def frame(self, m, keep):
+        self.n += 1
+        if self.n % self.EVERY:
+            return
+        # ~16k samples (YUYV: Y0 U Y1 V). Brightness from all; colour only
+        # from mid-tones and highlights, where a cast is visible.
+        ys = us = vs = ny = nc = 0
+        for i in range(0, keep - 4, 256):
+            y = m[i]
+            ys += y
+            ny += 1
+            if 24 <= y <= 235:
+                us += m[i + 1]
+                vs += m[i + 3]
+                nc += 1
+        ym = ys / ny
+        try:
+            if nc > 200:
+                um, vm = us / nc, vs / nc
+                # Blue gain lifts U (Cb), red gain lifts V (Cr).
+                self.b = self.clamp(self.b * 2 ** self.clamp((128 - um) / 40, -0.05, 0.05),
+                                    self.WB_MIN, self.WB_MAX)
+                self.r = self.clamp(self.r * 2 ** self.clamp((128 - vm) / 40, -0.05, 0.05),
+                                    self.WB_MIN, self.WB_MAX)
+                self.apply_wb()
+            else:
+                um = vm = 0
+            if self.sensor.fd is not None:
+                self.expose(ym)
+        except OSError:
+            pass
+        if self.n % (self.EVERY * 40) == 0:
+            log(f"3A: Y={ym:.0f} U={um:.1f} V={vm:.1f} wb r={self.r:.2f} b={self.b:.2f} "
+                f"exp={self.sensor.get(CID_EXPOSURE)} again={self.sensor.get(CID_AGAIN)} "
+                f"dgain={self.sensor.get(CID_DGAIN)}")
+
+    def expose(self, ym):
+        err = self.Y_TARGET - ym
+        if abs(err) <= 6:
+            return
+        # Darker: exposure, analogue gain, digital gain (least noise first).
+        # Brighter: undo in reverse order.
+        stages = [(CID_EXPOSURE, self.lim["exp"]), (CID_AGAIN, self.lim["again"]),
+                  (CID_DGAIN, self.lim["dgain"])]
+        if err < 0:
+            stages.reverse()
+        for cid, (lo, hi) in stages:
+            cur = self.sensor.get(cid)
+            if (err > 0 and cur < hi) or (err < 0 and cur > lo):
+                ratio = 2 ** self.clamp(err / 60, -0.3, 0.3)
+                self.sensor.set(cid, self.clamp(round(cur * ratio), lo, hi))
+                return
+
+
+def main():
+    cam = sys.argv[1] if len(sys.argv) > 1 else "front"
+    probe = "--probe" in sys.argv
+    test = None
+    if "--test" in sys.argv:
+        i = sys.argv.index("--test")
+        test = (float(sys.argv[i + 1]), float(sys.argv[i + 2]), int(sys.argv[i + 3]))
+    inp, w, h, sensor_name, lim, wb = CAMS[cam]
+
+    fd = os.open(VIDEO, os.O_RDWR | os.O_CLOEXEC)
+    ioctl(fd, VIDIOC_S_INPUT, bytearray(struct.pack("i", inp)))
+    pix = struct.pack("12I", w, h, YUYV, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+    fmt = struct.pack("I4x", CAPTURE) + pix
+    fmt = bytearray(fmt + bytes(208 - len(fmt)))
+    ioctl(fd, VIDIOC_S_FMT, fmt)
+    fw, fh, _, _, bpl, size = struct.unpack_from("6I", fmt, 8)
+    log(f"{cam}: {fw}x{fh} YUYV, {bpl} bytes/line, {size} bytes/frame")
+
+    req = ioctl(fd, VIDIOC_REQBUFS, bytearray(struct.pack("5I", NBUF, CAPTURE, MMAP, 0, 0)))
+    count = struct.unpack_from("I", req)[0]
+    bufs = []
+    for i in range(count):
+        b = bytearray(88)
+        struct.pack_into("II", b, 0, i, CAPTURE)
+        struct.pack_into("I", b, 60, MMAP)
+        ioctl(fd, VIDIOC_QUERYBUF, b)
+        offset, length = struct.unpack_from("I", b, 64)[0], struct.unpack_from("I", b, 72)[0]
+        bufs.append(mmap.mmap(fd, length, mmap.MAP_SHARED, mmap.PROT_READ, offset=offset))
+        ioctl(fd, VIDIOC_QBUF, b)
+    ioctl(fd, VIDIOC_STREAMON, bytearray(struct.pack("i", CAPTURE)))
+
+    isp = ISP(fd)
+    sensor = Sensor(sensor_name)
+    three_a = None if (probe or test) else ThreeA(isp, sensor, lim, wb)
+    out = sys.stdout.buffer
+    keep = bpl * fh
+    row = fw * 2
+    n = 0
+    try:
+        while True:
+            b = bytearray(88)
+            struct.pack_into("I", b, 4, CAPTURE)
+            struct.pack_into("I", b, 60, MMAP)
+            ioctl(fd, VIDIOC_DQBUF, b)
+            idx = struct.unpack_from("I", b, 0)[0]
+            n += 1
+            if test:
+                if n == 10:
+                    r, bl, ob = test
+                    one = 1 << 15
+                    isp.set_wb(1, one, int(r * one), int(bl * one), one)
+                    isp.set_ob(ob)
+                if n == 40:
+                    m = bufs[idx]
+                    y = m[0:keep:64]; u = m[1:keep:128]; v = m[3:keep:128]
+                    ys = sorted(y)
+                    log(f"R={test[0]} B={test[1]} OB={test[2]}: Y={sum(y)/len(y):.1f} "
+                        f"U={sum(u)/len(u):.1f} V={sum(v)/len(v):.1f} "
+                        f"Y1%={ys[len(ys)//100]} Y99%={ys[-len(ys)//100]} "
+                        f"WB={isp.get_wb()} OB={isp.get_ob()[:5]}")
+                    break
+            elif probe:
+                if n in (5, 30):
+                    log(f"frame {n}: WB(bits,gr,r,b,gb)={isp.get_wb()} "
+                        f"OB(mode,gr,r,b,gb,start,end)={isp.get_ob()}")
+                if n >= 30:
+                    break
+            else:
+                m = bufs[idx]
+                if bpl == row:
+                    out.write(m[:keep])
+                else:
+                    mv = memoryview(m)
+                    out.write(b"".join(mv[r * bpl:r * bpl + row] for r in range(fh)))
+                three_a.frame(m, keep)
+            ioctl(fd, VIDIOC_QBUF, b)
+    except BrokenPipeError:
+        pass
+    finally:
+        try:
+            ioctl(fd, VIDIOC_STREAMOFF, bytearray(struct.pack("i", CAPTURE)))
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())

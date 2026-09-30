@@ -1,0 +1,68 @@
+#!/usr/bin/python3
+# Yoga Book X91: the panel is portrait-native (1200x1920). When a pointer
+# appears (the Halo keyboard driver creates virtual-keyboard/virtual-touchpad),
+# mutter leaves touch mode, stops auto-rotation and resets the built-in panel to
+# its native (CRTC) orientation, which is portrait. Put it back to landscape
+# (logical transform 0) whenever orientation is not managed by mutter.
+from gi.repository import Gio, GLib
+
+NAME = "org.gnome.Mutter.DisplayConfig"
+PATH = "/org/gnome/Mutter/DisplayConfig"
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+pending = [False]
+
+
+def call(method, args=None):
+    return bus.call_sync(NAME, PATH, NAME, method, args, None,
+                         Gio.DBusCallFlags.NONE, -1, None).unpack()
+
+
+def managed():
+    return bus.call_sync(NAME, PATH, "org.freedesktop.DBus.Properties", "Get",
+                         GLib.Variant("(ss)", (NAME, "PanelOrientationManaged")),
+                         None, Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+
+
+def fix():
+    pending[0] = False
+    try:
+        if managed():
+            return False
+        serial, monitors, logical, _ = call("GetCurrentState")
+        builtin = [m for m in monitors if m[2].get("is-builtin")]
+        if not builtin:
+            return False
+        conn = builtin[0][0][0]
+        if not any(lm[3] != 0 and any(s[0] == conn for s in lm[5]) for lm in logical):
+            return False
+        mode = {m[0][0]: [x for x in m[1] if x[6].get("is-current")] for m in monitors}
+        cfg = []
+        for x, y, scale, transform, primary, specs, _ in logical:
+            if any(s[0] == conn for s in specs):
+                transform = 0
+            cfg.append((x, y, scale, transform, primary,
+                        [(s[0], mode[s[0]][0][0], {}) for s in specs if mode.get(s[0])]))
+        call("ApplyMonitorsConfig",
+             GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, cfg, {})))
+    except Exception as e:
+        print("yogabook-landscape-fix:", e, flush=True)
+    return False
+
+
+def schedule(*_):
+    if not pending[0]:
+        pending[0] = True
+        GLib.timeout_add(500, fix)
+
+
+def wait_for_mutter(*_):
+    bus.signal_subscribe(NAME, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                         PATH, None, Gio.DBusSignalFlags.NONE, schedule)
+    bus.signal_subscribe(NAME, NAME, "MonitorsChanged", PATH, None,
+                         Gio.DBusSignalFlags.NONE, schedule)
+    schedule()
+
+
+Gio.bus_watch_name_on_connection(bus, NAME, Gio.BusNameWatcherFlags.NONE,
+                                 wait_for_mutter, None)
+GLib.MainLoop().run()

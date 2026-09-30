@@ -1,0 +1,22 @@
+From fe47578f73e6c25f9d4b892acf2ea535ae84c653 Mon Sep 17 00:00:00 2001
+From: Yauhen Kharuzhy <jekhor@gmail.com>
+Date: Sat, 31 Oct 2020 17:39:04 +0300
+Subject: [PATCH 05/32] SPI: Export spi_register_board_info() to modules
+
+---
+ drivers/spi/spi.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/spi/spi.c b/drivers/spi/spi.c
+index 12b3a3b29..da0ac38ee 100644
+--- a/drivers/spi/spi.c
++++ b/drivers/spi/spi.c
+@@ -952,7 +952,7 @@ int spi_register_board_info(struct spi_board_info const *info, unsigned n)
+ 
+ 	return 0;
+ }
+-
++EXPORT_SYMBOL_GPL(spi_register_board_info);
+ /*-------------------------------------------------------------------------*/
+ 
+ /* Core methods for SPI resource management */

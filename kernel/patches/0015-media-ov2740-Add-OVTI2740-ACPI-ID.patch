@@ -1,0 +1,25 @@
+From 67b8ae88a59d0620040c5a3a63b36884a12ff180 Mon Sep 17 00:00:00 2001
+From: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Date: Wed, 2 Sep 2026 16:53:33 +0200
+Subject: [PATCH 15/32] media: ov2740: Add OVTI2740 ACPI ID
+
+Firmware may enumerate OV2740 image sensors using the OVTI2740 ACPI ID.
+Add it to the existing ACPI match table.
+
+Signed-off-by: Maurizio Casciano <mauriziocasciano7@gmail.com>
+---
+ drivers/media/i2c/ov2740.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/media/i2c/ov2740.c b/drivers/media/i2c/ov2740.c
+index ae7dbc559..fe302af88 100644
+--- a/drivers/media/i2c/ov2740.c
++++ b/drivers/media/i2c/ov2740.c
+@@ -1461,6 +1461,7 @@ static DEFINE_RUNTIME_DEV_PM_OPS(ov2740_pm_ops, ov2740_suspend, ov2740_resume,
+ 
+ static const struct acpi_device_id ov2740_acpi_ids[] = {
+ 	{ .id = "INT3474" },
++	{ .id = "OVTI2740" },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(acpi, ov2740_acpi_ids);

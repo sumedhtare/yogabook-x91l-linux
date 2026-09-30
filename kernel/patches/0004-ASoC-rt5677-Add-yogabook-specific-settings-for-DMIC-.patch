@@ -1,0 +1,42 @@
+From 9ec84ba2be99e34c872c8b70bf72837c1609d266 Mon Sep 17 00:00:00 2001
+From: Yauhen Kharuzhy <jekhor@gmail.com>
+Date: Sat, 31 Oct 2020 18:05:24 +0300
+Subject: [PATCH 04/32] ASoC: rt5677: Add yogabook-specific settings for DMIC
+ and LDO
+
+Hardcode some YogaBook-specific values for DMIC_CTRL1 register and LDO1
+voltage.
+---
+ sound/soc/codecs/rt5677.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/rt5677.c b/sound/soc/codecs/rt5677.c
+index ac084ca00..5f068e475 100644
+--- a/sound/soc/codecs/rt5677.c
++++ b/sound/soc/codecs/rt5677.c
+@@ -69,6 +69,7 @@ static const struct reg_sequence init_list[] = {
+ 	{RT5677_PR_BASE + 0x15,	0x0490},
+ 	{RT5677_PR_BASE + 0x38,	0x0f71},
+ 	{RT5677_PR_BASE + 0x39,	0x0f71},
++	{RT5677_DMIC_CTRL1,	0x2505},
+ };
+ #define RT5677_INIT_REG_LEN ARRAY_SIZE(init_list)
+ 
+@@ -768,7 +769,7 @@ static unsigned int rt5677_set_vad_source(struct rt5677_priv *rt5677)
+ 	 */
+ 	regmap_update_bits(rt5677->regmap, RT5677_PWR_ANLG1,
+ 		RT5677_LDO1_SEL_MASK | RT5677_LDO2_SEL_MASK,
+-		5 << RT5677_LDO1_SEL_SFT | 5 << RT5677_LDO2_SEL_SFT);
++		6 << RT5677_LDO1_SEL_SFT | 5 << RT5677_LDO2_SEL_SFT);
+ 
+ 	/* Codec core power =  power on
+ 	 * LDO1 power = power on
+@@ -4655,7 +4656,7 @@ static int rt5677_set_bias_level(struct snd_soc_component *component,
+ 
+ 			regmap_update_bits(rt5677->regmap, RT5677_PWR_ANLG1,
+ 				RT5677_LDO1_SEL_MASK | RT5677_LDO2_SEL_MASK,
+-				5 << RT5677_LDO1_SEL_SFT |
++				6 << RT5677_LDO1_SEL_SFT |
+ 				5 << RT5677_LDO2_SEL_SFT);
+ 			regmap_update_bits(rt5677->regmap,
+ 				RT5677_PR_BASE + RT5677_BIAS_CUR4,

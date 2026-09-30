@@ -1,0 +1,4 @@
+# Hide the raw AtomISP capture node from desktop apps: it has fixed sizes and
+# padded rows that normal apps can't use. yogabook-webcam (root) bridges it to
+# /dev/video10 instead.
+SUBSYSTEM=="video4linux", ATTR{name}=="ATOMISP*", TAG-="uaccess", GROUP="root", MODE="0600"

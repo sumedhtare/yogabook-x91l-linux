@@ -1,0 +1,16 @@
+# Local override of yogabook-support hwdb: on 6.17.4-yogabook1 the HID sensor
+# instance ids are .10/.11/.19/.20 (package ships .9/.10/.18/.19).
+# Verified by gravity: .10/.19 = display (no matrix: mutter adds the panel rotation itself), .11/.20 = base.
+sensor:modalias:platform:HID-SENSOR-200073:id:HID-SENSOR-200073.10.auto:dmi:bvnLENOVO*pnLenovoYB1-X9*
+ ACCEL_LOCATION=display
+
+sensor:modalias:platform:HID-SENSOR-200073:id:HID-SENSOR-200073.11.auto:dmi:bvnLENOVO*pnLenovoYB1-X9*
+ ACCEL_LOCATION=base
+ ACCEL_MOUNT_MATRIX=0, 1, 0; -1, 0, 0; 0, 0, 1
+
+sensor:modalias:platform:HID-SENSOR-200073:id:HID-SENSOR-200073.19.auto:dmi:bvnLENOVO*pnLenovoYB1-X9*
+ ACCEL_LOCATION=display
+
+sensor:modalias:platform:HID-SENSOR-200073:id:HID-SENSOR-200073.20.auto:dmi:bvnLENOVO*pnLenovoYB1-X9*
+ ACCEL_LOCATION=base
+ ACCEL_MOUNT_MATRIX=0, 1, 0; -1, 0, 0; 0, 0, 1

@@ -1,0 +1,94 @@
+# Lenovo Yoga Book YB1-X91L on Ubuntu 26.04
+
+Everything needed to get the Windows Yoga Book (YB1-X91L, Atom x5-Z8550 /
+Cherry Trail) working on Ubuntu 26.04: a patched 7.2.8 kernel, config files,
+and small helper services. Builds on
+[jekhor/yogabook-linux](https://github.com/jekhor/yogabook-linux).
+
+| Hardware | Status | How |
+|---|---|---|
+| Halo keyboard | ✅ | `touch-keyboard` userspace driver (jekhor) |
+| Sound (speakers, headphones, mics) | ✅ | cht-yogabook machine driver (jekhor patches, ported to 7.2) + UCM |
+| Auto-rotation | ✅ | fixed sensor hwdb + `yogabook-landscape-fix` |
+| Touchscreen, pen, Wi-Fi, battery, kbd backlight | ✅ | upstream |
+| Front + rear camera | ✅ | camera patch series + AtomISP + on-demand webcam bridge with white balance |
+| LTE modem (XMM7260) | ⚠️ 2G/EDGE only | modem RFC patches + xHCI kept awake |
+| Bluetooth | ⚠️ | works without firmware patch file (`BCM4356A2.hcd` not available) |
+| Suspend/resume with modem/camera | ❓ untested | |
+
+## Replay from scratch
+
+### 1. Tablet: install Ubuntu 26.04
+
+Use a powered micro-USB OTG hub with a USB keyboard and the installer stick,
+boot holding **Volume Up**, install normally.
+
+### 2. Laptop: get the kernel packages
+
+Either download the prebuilt ones (GitHub release of this repo), which
+`deploy.sh` does automatically, or build them:
+
+```sh
+kernel/build.sh            # ~30 min; output in ~/yb-kernel/*.deb
+```
+
+`build.sh` fetches linux-7.2.8 from kernel.org (checksum verified), applies
+`kernel/patches/*`, uses `kernel/config-7.2.8-yogabook` and runs
+`make bindeb-pkg`. Build dependencies are used from the system if installed,
+otherwise unpacked locally without root.
+
+### 3. Push to the tablet
+
+```sh
+APN=airtelgprs.com APN_NAME="Airtel LTE" ./deploy.sh sumedh@<tablet-ip>
+ssh sumedh@<tablet-ip> sudo reboot
+```
+
+`deploy.sh` sets up SSH key login, copies `tablet/` and the kernel packages,
+and runs `tablet/install.sh` (asks for the tablet's sudo password). Leave out
+`APN=` to skip the mobile-data connection. `install.sh` is safe to re-run.
+
+## What `tablet/install.sh` does
+
+1. Ubuntu packages: python3-evdev/pyudev, iio-sensor-proxy, v4l-utils, ffmpeg,
+   v4l2loopback-dkms, libmbim-utils, ModemManager.
+2. jekhor's packages (release `debs-20251026`): `touch-keyboard`,
+   `yogabook-support`, `alsa-ucm-conf-yogabook`.
+3. Copies `tablet/files/` to `/` (see below).
+4. Installs the kernel, enables the services, rebuilds hwdb.
+5. GRUB: `GRUB_DEFAULT=saved`, menu shown 3 s, default = 7.2.8-yogabook-cam+.
+   Any other installed kernel stays in "Advanced options" as a fallback.
+6. Regenerates all initramfs images (they carry `modprobe.d` options).
+7. Optionally creates the NetworkManager GSM connection.
+
+## Files installed on the tablet
+
+| File | Why |
+|---|---|
+| `etc/udev/hwdb.d/61-sensor-yogabook.hwdb` | Overrides yogabook-support's sensor hwdb: on 7.x the accelerometer ids are `.10/.11/.19/.20`, not `.9/.10/.18/.19`. `.10/.19` = display (no mount matrix — mutter applies the panel rotation itself), `.11/.20` = base. |
+| `etc/systemd/user/yogabook-landscape-fix.service`, `usr/local/bin/yogabook-landscape-fix` | Mutter "rotates back to normal" when a keyboard/touchpad appears (Halo keyboard on). "Normal" for this portrait-native panel is portrait, so this puts the screen back to landscape whenever auto-rotation is off. |
+| `etc/udev/rules.d/71-yogabook-modem-xhci.rules` | Keeps the xHCI controller, its root hubs and the modem out of runtime suspend. Otherwise the XMM7260 never finishes enumerating (8087:07ef → ~50 s → 8087:0911 MBIM). |
+| `etc/udev/rules.d/70-yogabook-atomisp.rules` | Hides the raw AtomISP node (`/dev/video0`) from desktop apps. |
+| `etc/modprobe.d/yogabook-webcam.conf`, `etc/modules-load.d/yogabook-webcam.conf` | v4l2loopback `/dev/video10` "Yoga Book Camera", `exclusive_caps=1`, max 1280x720. |
+| `etc/dkms/v4l2loopback.conf` | Build v4l2loopback with `-Wno-error=unused-label` (the kernel has `CONFIG_WERROR`). |
+| `etc/systemd/system/yogabook-webcam-watch.service`, `usr/local/bin/yogabook-webcam-watch` | On-demand webcam: keeps `/dev/video10` listed, starts the camera when an app opens it, stops it 10 s after the last app closes it. |
+| `usr/local/bin/yogabook-webcam` | Camera pipeline: `yogabook-capture` → ffmpeg crop/scale to 1280x720 YUYV. |
+| `usr/local/bin/yogabook-capture` | Captures from AtomISP, strips row padding, runs grey-world auto white balance on the ISP white-balance gains and auto exposure on the sensor. |
+| `usr/share/applications/yogabook-camera-{front,rear}.desktop` | "Use Front/Rear Camera" launchers (writes `/var/lib/yogabook-webcam/camera`). |
+
+## Kernel patches (`kernel/patches`)
+
+| Patches | Source |
+|---|---|
+| 0001–0011 | [jekhor/yogabook-linux-kernel](https://github.com/jekhor/yogabook-linux-kernel) branch `v6.18.x-yogabook` (sound, PMIC regulator, pstore). The "WiP atomisp" patch is left out, and patches already upstream in 7.2 (rt5677 ACPI ID/GPIO/reset, drv260x ACPI, PWM2) are dropped. 0004 and 0011 cancel out (kept as upstream has them). |
+| 0012–0027 | "media: Add Yoga Book camera support" v7 by Maurizio Casciano ([patchwork series 29791](https://patchwork.linuxtv.org/project/linux-media/list/?series=29791)), not merged upstream yet. |
+| 0029 | cht_yogabook machine driver ported to the 7.2 DAPM API (`snd_soc_dapm_to_card`, `snd_soc_card_to_dapm`, `strscpy`). |
+| 0030–0031 | RFC "x86/usb: Add Yoga Book XMM7260 modem power sequencing" ([patchwork series 1152088](https://patchwork.kernel.org/project/platform-driver-x86/list/?series=1152088)); the xhci-pci.c include hunk fixed by hand. |
+| 0032 | AtomISP: allow the white-balance and black-level private ioctls (upstream disables all private ioctls, so nothing white balances the Bayer data and images are green). |
+
+Config: jekhor's `config-6.17.4-yogabook1` + `make olddefconfig` + camera
+(`VIDEO_ATOMISP`, `VIDEO_OV2740`, `VIDEO_OV8858`, `VIDEO_WV517S`,
+`IPU_BRIDGE`, `INTEL_SKL_INT3472`), `INTEL_CHT_MODEM`, `USB_NET_CDC_MBIM`,
+no `DEBUG_INFO`/`DEBUG_DRIVER`, `LOCALVERSION=-yogabook-cam`.
+
+See [NOTES.md](NOTES.md) for findings, gotchas and open issues.

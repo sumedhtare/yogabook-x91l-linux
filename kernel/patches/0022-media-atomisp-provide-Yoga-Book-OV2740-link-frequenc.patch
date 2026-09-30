@@ -1,0 +1,76 @@
+From 34c99085266032c18b399f4e407a188e523253a3 Mon Sep 17 00:00:00 2001
+From: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Date: Wed, 2 Sep 2026 16:53:40 +0200
+Subject: [PATCH 22/32] media: atomisp: provide Yoga Book OV2740 link frequency
+
+The Lenovo Yoga Book YB1-X91 firmware does not describe the front
+OV2740 link frequency. Extend the AtomISP sensor configuration with an
+optional frequency and assign the 288 MHz Yoga Book value while adding
+its ACPI ID.
+
+Pass the value through the IPU bridge per-sensor endpoint data so the
+OV2740 driver selects its matching mode and the AtomISP CSI-2 receiver
+derives the correct D-PHY timing.
+
+Signed-off-by: Maurizio Casciano <mauriziocasciano7@gmail.com>
+Assisted-by: LLM sparse
+Reviewed-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+---
+ .../media/atomisp/pci/atomisp_csi2_bridge.c       | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/staging/media/atomisp/pci/atomisp_csi2_bridge.c b/drivers/staging/media/atomisp/pci/atomisp_csi2_bridge.c
+index 56da454f0..226c81409 100644
+--- a/drivers/staging/media/atomisp/pci/atomisp_csi2_bridge.c
++++ b/drivers/staging/media/atomisp/pci/atomisp_csi2_bridge.c
+@@ -15,6 +15,7 @@
+ #include <linux/dmi.h>
+ #include <linux/platform_data/x86/int3472.h>
+ #include <linux/property.h>
++#include <linux/units.h>
+ 
+ #include <media/ipu-bridge.h>
+ #include <media/v4l2-fwnode.h>
+@@ -43,14 +44,16 @@ static const guid_t vcm_dsm_guid =
+ 		  0x9f, 0x48, 0xa9, 0xc3, 0xb5, 0xda, 0x78, 0x9f);
+ 
+ struct atomisp_sensor_config {
++	u64 link_freq;
+ 	int lanes;
+ 	bool vcm;
+ };
+ 
+-#define ATOMISP_SENSOR_CONFIG(_HID, _LANES, _VCM)			\
++#define ATOMISP_SENSOR_CONFIG(_HID, _LANES, _VCM, _LINK_FREQ)	\
+ {									\
+ 	.id = _HID,							\
+ 	.driver_data = (long)&((const struct atomisp_sensor_config) {	\
++		.link_freq = _LINK_FREQ,				\
+ 		.lanes = _LANES,					\
+ 		.vcm = _VCM,						\
+ 	})								\
+@@ -374,9 +377,11 @@ static const struct acpi_device_id atomisp_sensor_configs[] = {
+ 	 * an i2c-client for the VCM, so it is disabled for now.
+ 	 */
+ 	/* OV5693 */
+-	ATOMISP_SENSOR_CONFIG("INT33BE", 2, false),
++	ATOMISP_SENSOR_CONFIG("INT33BE", 2, false, 0),
+ 	/* OV8858 */
+-	ATOMISP_SENSOR_CONFIG("INT3477", 4, true),
++	ATOMISP_SENSOR_CONFIG("INT3477", 4, true, 0),
++	/* OV2740 */
++	ATOMISP_SENSOR_CONFIG("OVTI2740", 2, false, 288 * HZ_PER_MHZ),
+ 	{}
+ };
+ 
+@@ -395,6 +400,10 @@ static int atomisp_csi2_parse_sensor_fwnode(struct acpi_device *adev,
+ 
+ 		lanes = cfg->lanes;
+ 		vcm = cfg->vcm;
++		if (cfg->link_freq) {
++			sensor->link_freqs[0] = cfg->link_freq;
++			sensor->nr_link_freqs = 1;
++		}
+ 	}
+ 
+ 	/*

@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep Yoga Book screen landscape when auto-rotation is off (Halo keyboard on)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/yogabook-landscape-fix
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

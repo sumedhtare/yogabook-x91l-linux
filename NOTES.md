@@ -1,0 +1,85 @@
+# Notes, findings and open issues
+
+## Cameras
+
+- Front: OmniVision OV2740 (ACPI `OVTI2740`), rear: OV8858 (`INT3477`) with
+  WV517S focus motor, both on the Cherry Trail AtomISP2 (`8086:22b8`).
+- ISP firmware `intel/ipu/shisp_2401a0_v21.bin` ships in Ubuntu's
+  linux-firmware.
+- `/dev/video0` has input 0 = front (1916x1076), input 1 = rear (1616x1208),
+  rows padded to a multiple of 32 pixels, and it can only be opened once.
+- No 3A without Intel's proprietary userspace. Raw OV2740 Bayer data is
+  R/G≈0.57, B/G≈0.58; the ISP white-balance gains default to 1.0 and the
+  sensor's own `red/blue_balance` is weak (4x gives only +23%), hence the
+  green images. `yogabook-capture` sets the ISP gains
+  (`ATOMISP_IOC_S_ISP_WHITE_BALANCE`, 1.15 fixed point); the front camera
+  settles around r≈1.7–1.8, b≈1.7–1.8. `ATOMISP_IOC_S_BLACK_LEVEL_COMP` had
+  no visible effect.
+- The first capture after boot takes 25 s+ (ISP bring-up); the watcher warms
+  the camera up once at boot.
+- The Windows driver package (Lenovo DS119820,
+  `yoga_book_intel_chipset_driver_201804.zip`,
+  `Intel_Driver/Camera/ov2740/OV2740_CJAE533_CHT.cpf` and
+  `ov8858/OV8858_P8V12F203_CHT.cpf`) has Intel's AIQB tuning: a chain of
+  `<u32 size><u16 tag><u16 id>` records — ids 1–20 camera-module data (2 =
+  resolution/bit depth, 3 = black level, 5 = saturation, 10 = lens shading,
+  15 = colour matrices), 257+ = 3A tuning, 321+ = ISP settings (324 looks
+  like a gamma curve). Colour matrix / gamma / lens shading are not decoded
+  or applied yet. Not redistributed here (Lenovo/Intel files).
+
+### Webcam bridge gotchas
+
+- GStreamer (Cheese) skips V4L2 devices that announce both capture and
+  output, so v4l2loopback needs `exclusive_caps=1`.
+- With `exclusive_caps=1`, capture formats are only offered while a writer is
+  attached, and a second writer gets `VIDIOC_G_FMT: EINVAL`. So the watcher is
+  the one and only writer: it holds the output side open, writes a
+  placeholder frame, and copies the camera frames in.
+- v4l2loopback replays the last frame to new readers — hence the placeholder.
+- udev probes the device before the writer exists; the watcher re-triggers
+  udev (remove + add; PipeWire ignores "change").
+- `v4l2-ctl -i N` prints "Video input set to ..." on stdout, which corrupts
+  `--stream-to=-`.
+- dracut copies `modprobe.d` into the initramfs: regenerate it after changing
+  module options.
+- WirePlumber only lets the user on the active seat stream cameras; PipeWire
+  camera tests over SSH fail when nobody is logged in on the tablet.
+- libcamera 0.7 (Ubuntu 26.04) has no AtomISP support, so the Windows-like
+  model (app opens the camera, the stack runs 3A, no watcher/loopback) is not
+  available yet.
+
+## LTE modem (Intel XMM7260)
+
+- Sits on the Cherry Trail xHCI SSIC port, ACPI `INT34D0`. Firmware
+  `BLADE7260_MBIM_ES3_01.1625.00`, `XMM7260_V2_REV_3.0_NAND_MBIM`.
+- The `intel_cht_modem` driver powers it on (PMIC reg 0x6e29 + ACPI `_DSM`).
+  It first shows up as 8087:07ef and ~50 s later as 8087:0911 (MBIM,
+  `cdc-wdm0` + `wwp0s20u5`) — only if xHCI and its root hubs never runtime
+  suspend (udev rule).
+- ModemManager 1.25 handles it with the Fibocom plugin (can't be overridden).
+  The first connect sometimes fails with "MBIM status error: Failure"; the
+  NetworkManager retry succeeds.
+- Only GPRS/EDGE was ever offered (Airtel India, which has no 3G), although
+  the modem advertises LTE and the YB1-X91L spec lists bands 1/3/8/40. The
+  firmware exposes no way to set RAT/bands (no AT tunnel, no ATDS RAT, no LTE
+  attach config); 13 unknown vendor MBIM services may hold that.
+- It once crashed into Comneon dump mode (1519:f000) while trying odd APNs.
+  Recover: `sudo modprobe -r intel_cht_modem && sudo modprobe intel_cht_modem`
+  or reboot.
+
+## Rotation
+
+- The panel is 1200x1920 portrait-native (kernel quirk `rightside_up`), and
+  mutter applies the sensor orientation relative to the panel's native
+  orientation — so the display accelerometers need no mount matrix.
+- Mutter only auto-rotates in touch mode; with the Halo keyboard's virtual
+  touchpad present it leaves touch mode and resets to the CRTC-native
+  (portrait) orientation — `yogabook-landscape-fix` undoes that.
+
+## Other
+
+- `cherryview-pinctrl INT33FF:04 probe failed -61`, `intel-hid failed to
+  enable HID power button`: harmless.
+- Bluetooth wants `brcm/BCM4356A2.hcd`; no known-good UART version exists.
+- jekhor's kernel 6.17.4-yogabook1 can stay installed as a fallback (sound
+  works there too; cameras/modem don't).
