@@ -3,6 +3,9 @@
 # video over RTP/UDP 5600 and Opus audio over RTP/UDP 5602. The window only
 # exists while a stream is coming in; 3 s after it stops the pipeline is torn
 # down (the dashboard comes back) and it waits for the next one.
+# The sinks are async=false: otherwise the pipeline only starts playing once
+# BOTH video and audio arrive, and a sender without audio leaves the first
+# video frame frozen on screen.
 # Never drop encoded data (that corrupts everything up to the next keyframe:
 # a grey screen); if the Atom falls behind, drop decoded frames instead.
 import os
@@ -26,12 +29,12 @@ PIPELINE = f"""
     ! rtph264depay ! h264parse ! queue max-size-time=500000000
     ! {DECODER}
     ! queue leaky=downstream max-size-buffers=2
-    ! videoconvert ! waylandsink sync=false
+    ! videoconvert ! waylandsink sync=false async=false
   udpsrc port={AUDIO_PORT} buffer-size=1048576
       caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=97,clock-rate=48000"
     ! rtpjitterbuffer latency=80
     ! rtpopusdepay ! opusdec ! audioconvert ! audioresample
-    ! autoaudiosink sync=false
+    ! autoaudiosink sync=false async-handling=true
 """
 
 

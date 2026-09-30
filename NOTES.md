@@ -157,7 +157,13 @@
   clients, no dialog). Verified by decoding a tablet-side pcap while changing
   the wallpaper colour. GNOME closes RecordMonitor sessions whenever the
   display layout changes (monitor unplugged, the virtual one being placed):
-  the sender listens for the Session "Closed" signal and records again. (3) the
+  the sender listens for the Session "Closed" signal and records again.
+  (2b) The real reason the tablet never moved: the laptop has no `pactl`, so
+  the sender sent no audio, and the receiver pipeline (video + audio sinks)
+  never finished its async state change -> waylandsink showed the preroll
+  frame forever. Receiver sinks are now async=false / async-handling, and
+  the sender uses `pulsesrc device=@DEFAULT_MONITOR@`. Test the TABLET screen
+  (grim as livingroom, WAYLAND_DISPLAY=wayland-1), not just a pcap. (3) the
   virtual monitor ("Meta-0, Virtual remote monitor") is created but not added
   to the logical layout, so the pointer/windows can't reach it -> the sender
   places it right of the existing monitors via DisplayConfig

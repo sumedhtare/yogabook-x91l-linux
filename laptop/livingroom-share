@@ -126,15 +126,6 @@ def encoder():
     return (f"x264enc tune=zerolatency speed-preset=ultrafast bitrate=8000 key-int-max={FPS}")
 
 
-def monitor_source():
-    try:
-        sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True,
-                              text=True, check=True).stdout.strip()
-        return sink + ".monitor"
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-
 def build_pipeline(src):
     host = socket.gethostbyname(HOST)
     enc = encoder()
@@ -152,10 +143,10 @@ def build_pipeline(src):
              f"! {enc} ! h264parse config-interval=-1 "
              f"! rtph264pay pt=96 config-interval=-1 mtu=1200 "
              f"! udpsink host={host} port={VIDEO_PORT} sync=false")
-    mon = monitor_source()
-    audio = (f" pulsesrc device={mon} ! audioconvert ! audioresample "
+    # what the laptop is playing (the default output's monitor)
+    audio = (f" pulsesrc device=@DEFAULT_MONITOR@ ! audioconvert ! audioresample "
              f"! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate=128000 "
-             f"! rtpopuspay pt=97 ! udpsink host={host} port={AUDIO_PORT} sync=false") if mon else ""
+             f"! rtpopuspay pt=97 ! udpsink host={host} port={AUDIO_PORT} sync=false")
     return Gst.parse_launch(video + audio)
 
 
