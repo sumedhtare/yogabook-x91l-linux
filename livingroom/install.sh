@@ -32,6 +32,15 @@ for s in autumn snow sakura fireflies rain mountains; do
   install -d -o livingroom -g livingroom "/home/livingroom/Pictures/Living Room/$s"
 done
 
+step "Your own pictures (my-pictures/<scene>/ -> ~livingroom/Pictures/Living Room/<scene>/)"
+if [[ -d $HERE/my-pictures ]]; then
+  for d in "$HERE"/my-pictures/*/; do
+    s=$(basename "$d")
+    install -d -o livingroom -g livingroom "/home/livingroom/Pictures/Living Room/$s"
+    install -o livingroom -g livingroom -m 644 "$d"* "/home/livingroom/Pictures/Living Room/$s/"
+  done
+fi
+
 step "App and files"
 install -d /opt/livingroom
 cp -r "$HERE/app/." /opt/livingroom/

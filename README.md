@@ -107,8 +107,9 @@ or, on the tablet, `sudo livingroom/install.sh`.
   `~livingroom/.config/livingroom/state.json`.
 - **Paintings**: public-domain works in `app/scenes/<scene>/`
   ([credits](livingroom/app/scenes/CREDITS.md)); drop your own images in
-  `~livingroom/Pictures/Living Room/<scene>/` and they replace the bundled ones
-  for that scene. One image per 20 minutes, slow Ken Burns drift.
+  `~livingroom/Pictures/Living Room/<scene>/` (or `livingroom/my-pictures/<scene>/`
+  in this repo, which the installer copies there) and they replace the bundled
+  ones for that scene. Currently: autumn path photo, sakura bridge. One image per 20 minutes, slow Ken Burns drift.
 - **Bluetooth speaker** "Living Room": always discoverable, pairs without a PIN
   (`livingroom-bt-agent`), class = loudspeaker; track title/artist via AVRCP.
 - **AirPlay** (iPhone/iPad/Mac): UxPlay, mirroring full screen with VA-API
