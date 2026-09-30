@@ -1,0 +1,5 @@
+#!/bin/sh
+# "Living Room" Wayland session (see /usr/share/wayland-sessions/livingroom.desktop):
+# cage shows one full-screen app at a time; windows opened later (AirPlay or
+# Miracast video) appear on top of the dashboard and it returns when they close.
+exec cage -d -s -- /usr/local/bin/livingroom-kiosk

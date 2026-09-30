@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+# Make the tablet behave like a Bluetooth speaker: always discoverable and
+# pairable as "Living Room", accept pairing without a PIN (like a real
+# speaker), and trust paired devices so they reconnect by themselves.
+# Audio itself is handled by PipeWire/WirePlumber in the Living Room session.
+import sys
+
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+from gi.repository import GLib
+
+NAME = sys.argv[1] if len(sys.argv) > 1 else "Living Room"
+AGENT_PATH = "/local/livingroom/agent"
+BUS = "org.bluez"
+
+
+def log(msg):
+    print(f"bt-agent: {msg}", flush=True)
+
+
+class Agent(dbus.service.Object):
+    def __init__(self, bus):
+        super().__init__(bus, AGENT_PATH)
+        self.bus = bus
+
+    def trust(self, device):
+        props = dbus.Interface(self.bus.get_object(BUS, device), "org.freedesktop.DBus.Properties")
+        props.Set("org.bluez.Device1", "Trusted", True)
+        log(f"paired and trusted {props.Get('org.bluez.Device1', 'Alias')}")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        self.trust(device)
+        return "0000"
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        self.trust(device)
+        return dbus.UInt32(0)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ouq", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):
+        pass
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def DisplayPinCode(self, device, pincode):
+        pass
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        self.trust(device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+    def RequestAuthorization(self, device):
+        self.trust(device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Cancel(self):
+        pass
+
+
+def setup_adapter(bus):
+    om = dbus.Interface(bus.get_object(BUS, "/"), "org.freedesktop.DBus.ObjectManager")
+    for path, ifaces in om.GetManagedObjects().items():
+        if "org.bluez.Adapter1" in ifaces:
+            p = dbus.Interface(bus.get_object(BUS, path), "org.freedesktop.DBus.Properties")
+            a = "org.bluez.Adapter1"
+            p.Set(a, "Powered", True)
+            p.Set(a, "Alias", NAME)
+            p.Set(a, "DiscoverableTimeout", dbus.UInt32(0))
+            p.Set(a, "PairableTimeout", dbus.UInt32(0))
+            p.Set(a, "Pairable", True)
+            p.Set(a, "Discoverable", True)
+            log(f"{path}: '{NAME}' discoverable and pairable")
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    Agent(bus)
+    mgr = dbus.Interface(bus.get_object(BUS, "/org/bluez"), "org.bluez.AgentManager1")
+    mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+    mgr.RequestDefaultAgent(AGENT_PATH)
+    setup_adapter(bus)
+    # bluetoothd restarts or the adapter resetting would undo the settings
+    bus.add_signal_receiver(lambda *a: GLib.timeout_add_seconds(2, lambda: setup_adapter(bus) and False),
+                            signal_name="InterfacesAdded", dbus_interface="org.freedesktop.DBus.ObjectManager")
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

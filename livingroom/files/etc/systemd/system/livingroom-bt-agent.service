@@ -1,0 +1,12 @@
+[Unit]
+Description=Living Room: Bluetooth speaker pairing agent
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+ExecStart=/usr/local/bin/livingroom-bt-agent "Living Room"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=bluetooth.target

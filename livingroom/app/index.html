@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Living Room</title>
+<style>
+  :root {
+    --fg: #f4f1ea;
+    --dim: rgba(244, 241, 234, 0.66);
+    --faint: rgba(244, 241, 234, 0.36);
+    --a: #2b5cff; --b: #13c2c2; --c: #7a3cff; --d: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d16;
+    color: var(--fg); font-family: "Ubuntu", "Inter", "Cantarell", sans-serif;
+    cursor: none; user-select: none; -webkit-user-select: none; }
+
+  /* ---- paintings: two layers for crossfading, slow "Ken Burns" drift stepped
+     at 5 updates/s (too slow to tell, and cheap for the Atom's GPU) ---- */
+  .paint { position: fixed; inset: -5%; background: #0b0d16 center / cover no-repeat;
+    opacity: 0; transition: opacity 3s ease; will-change: transform; }
+  .paint.on { opacity: 1; }
+  .kb0 { animation: kb0 90s steps(450) infinite alternate; }
+  .kb1 { animation: kb1 110s steps(550) infinite alternate; }
+  .kb2 { animation: kb2 100s steps(500) infinite alternate; }
+  @keyframes kb0 { from { transform: scale(1) translate(0, 0); } to { transform: scale(1.06) translate(-2%, -1.5%); } }
+  @keyframes kb1 { from { transform: scale(1.06) translate(2%, 0); } to { transform: scale(1) translate(-1%, 1%); } }
+  @keyframes kb2 { from { transform: scale(1.02) translate(-1.5%, 1%); } to { transform: scale(1.07) translate(1.5%, -1%); } }
+  /* keep the clock (left) and weather (right) readable over any painting */
+  #shade { position: fixed; inset: 0;
+    background: linear-gradient(90deg, rgba(6,7,12,0.62) 0%, rgba(6,7,12,0.18) 42%, rgba(6,7,12,0.18) 52%, rgba(6,7,12,0.6) 100%),
+                linear-gradient(0deg, rgba(6,7,12,0.55) 0%, transparent 30%); }
+  /* without the weather card only the clock side needs the shade */
+  body:not([data-weather="card"]) #shade {
+    background: linear-gradient(90deg, rgba(6,7,12,0.55) 0%, rgba(6,7,12,0.12) 40%, transparent 60%),
+                linear-gradient(0deg, rgba(6,7,12,0.45) 0%, transparent 25%); }
+  #caption { position: fixed; right: 2.4vw; bottom: 2.2vh; font-size: 1.5vh; color: var(--faint);
+    letter-spacing: 0.04em; text-align: right; transition: opacity 3s; }
+  #caption i { color: var(--dim); }
+
+  /* particles (leaves, snow, petals, fireflies, rain) */
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #vignette { position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 5, 8, 0.55) 100%); }
+
+  /* ---- clock + weather ---- */
+  #main { position: fixed; inset: 0; display: grid; grid-template-columns: 1.25fr 1fr;
+    align-items: center; padding: 6vh 6vw; gap: 4vw; text-shadow: 0 0.2vh 1.5vh rgba(0,0,0,0.55); }
+  #time { font-size: 23vh; font-weight: 200; letter-spacing: -0.02em; line-height: 0.9;
+    font-variant-numeric: tabular-nums; }
+  #time .sec { font-size: 0.28em; color: var(--faint); margin-left: 0.25em; vertical-align: top;
+    position: relative; top: 0.5em; }
+  #date { font-size: 4.2vh; color: var(--dim); margin-top: 3vh; font-weight: 300; letter-spacing: 0.02em; }
+  #greet { font-size: 3vh; color: var(--faint); margin-top: 1.2vh; font-weight: 300; }
+
+  #weather { justify-self: end; width: 100%; max-width: 46vw; transition: opacity 1.2s;
+    padding: 3.5vh 2.6vw; border-radius: 2.4vh; background: rgba(8, 9, 14, 0.38);
+    border: 1px solid rgba(255, 255, 255, 0.07); }
+  .now { display: flex; align-items: center; gap: 2.5vw; }
+  #wicon { font-size: 15vh; line-height: 1; }
+  #wtemp { font-size: 13vh; font-weight: 200; line-height: 1; }
+  #wtemp small { font-size: 0.35em; color: var(--dim); vertical-align: top; }
+  #wdesc { font-size: 3.4vh; margin-top: 1vh; font-weight: 300; }
+  #wmeta { font-size: 2.1vh; color: var(--dim); margin-top: 0.8vh; white-space: nowrap; }
+  #wcity { font-size: 2.1vh; color: var(--faint); margin-top: 0.4vh; letter-spacing: 0.08em; text-transform: uppercase; }
+  .strip { display: flex; justify-content: space-between; margin-top: 3.5vh;
+    padding-top: 2.6vh; border-top: 1px solid rgba(255,255,255,0.12); }
+  .strip > div { text-align: center; flex: 1; }
+  .strip .t { font-size: 2vh; color: var(--faint); }
+  .strip .i { font-size: 4.2vh; margin: 0.9vh 0; }
+  .strip .v { font-size: 2.4vh; font-weight: 300; }
+  .strip .v span { color: var(--faint); margin-left: 0.4em; }
+  #days { margin-top: 3vh; }
+  .hidden { opacity: 0; pointer-events: none; }
+  #wmini { font-size: 3vh; color: var(--dim); margin-top: 2vh; font-weight: 300; display: none; }
+  body[data-weather="compact"] #wmini { display: block; }
+  body[data-weather="compact"] #weather, body[data-weather="off"] #weather { display: none; }
+
+  /* ---- now playing ---- */
+  #np { position: fixed; left: 6vw; bottom: 7vh; display: flex; align-items: center; gap: 2vw;
+    padding: 2.2vh 2.4vw; border-radius: 2vh; max-width: 62vw;
+    background: rgba(10, 10, 16, 0.42); border: 1px solid rgba(255,255,255,0.08);
+    transition: opacity 1.2s, transform 1.2s; }
+  #np.hidden { transform: translateY(2vh); }
+  #bars { display: flex; align-items: flex-end; gap: 0.5vh; height: 5vh; }
+  #bars i { display: block; width: 0.7vh; height: 100%; background: var(--fg); border-radius: 0.35vh;
+    transform-origin: bottom; transform: scaleY(0.15); transition: transform 0.12s linear; opacity: 0.85; }
+  #ntext { min-width: 0; }
+  #ncover { width: 11vh; height: 11vh; border-radius: 1.2vh; object-fit: cover; display: none;
+    box-shadow: 0 0.6vh 2.5vh rgba(0,0,0,0.45); }
+  #nsrc { font-size: 1.8vh; color: var(--faint); letter-spacing: 0.14em; text-transform: uppercase; }
+  #ntitle { font-size: 4vh; margin-top: 0.4vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #nartist { font-size: 2.6vh; color: var(--dim); margin-top: 0.3vh; font-weight: 300;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ---- theme picker (tap the screen) ---- */
+  #picker { position: fixed; left: 50%; bottom: 5vh; transform: translateX(-50%);
+    display: flex; gap: 1.6vw; padding: 1.8vh 2vw; border-radius: 3vh;
+    background: rgba(12, 12, 18, 0.72); border: 1px solid rgba(255,255,255,0.12);
+    transition: opacity 0.5s; }
+  #picker button { all: unset; text-align: center; width: 7.4vw; padding: 1.2vh 0; border-radius: 2vh;
+    font-size: 1.8vh; color: var(--dim); }
+  #picker button b { display: block; font-size: 5vh; font-weight: normal; margin-bottom: 0.6vh; }
+  #picker button.on { background: rgba(255,255,255,0.14); color: var(--fg); }
+  #picker .sep { width: 1px; margin: 1vh 0.4vw; background: rgba(255,255,255,0.15); }
+
+  #hint { position: fixed; left: 0; right: 0; bottom: 2.4vh; text-align: center;
+    font-size: 1.8vh; color: var(--faint); letter-spacing: 0.1em; transition: opacity 1.2s; }
+</style>
+</head>
+<body data-theme="mountains" data-weather="card">
+<div class="paint" id="paintA"></div>
+<div class="paint" id="paintB"></div>
+<div id="shade"></div>
+<canvas id="fx"></canvas>
+<div id="vignette"></div>
+<div id="caption"></div>
+
+<section id="main">
+  <div>
+    <div id="time">--:--</div>
+    <div id="date"></div>
+    <div id="greet"></div>
+    <div id="wmini"></div>
+  </div>
+  <div id="weather" class="hidden">
+    <div class="now"><div id="wicon"></div><div id="wtemp"></div></div>
+    <div id="wdesc"></div>
+    <div id="wmeta"></div>
+    <div id="wcity"></div>
+    <div class="strip" id="hours"></div>
+    <div class="strip" id="days"></div>
+  </div>
+</section>
+
+<div id="np" class="hidden">
+  <img id="ncover" alt="">
+  <div id="bars"><i></i><i></i><i></i><i></i><i></i></div>
+  <div id="ntext"><div id="nsrc"></div><div id="ntitle"></div><div id="nartist"></div></div>
+</div>
+
+<div id="picker" class="hidden"></div>
+<div id="hint">Tap for scenes · Play music to “Living Room” over Bluetooth, AirPlay or Cast</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let clock24 = true;
+
+// ======================= clock =======================
+const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const MONTHS = ["January","February","March","April","May","June","July","August",
+                "September","October","November","December"];
+const pad = (n) => String(n).padStart(2, "0");
+function hm(d) {
+  let h = d.getHours();
+  if (!clock24) h = h % 12 || 12;
+  return (clock24 ? pad(h) : h) + ":" + pad(d.getMinutes());
+}
+function tick() {
+  const d = new Date();
+  $("time").innerHTML = hm(d) + `<span class="sec">${pad(d.getSeconds())}</span>`;
+  $("date").textContent = `${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  const h = d.getHours();
+  $("greet").textContent = h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon"
+                         : h < 22 ? "Good evening" : "Good night";
+  if (d.getSeconds() === 0) applyTheme();   // "auto" follows season/weather
+  setTimeout(tick, 1000 - d.getMilliseconds());
+}
+// ======================= weather =======================
+const WMO = {
+  0: ["Clear", "☀️", "🌙"], 1: ["Mostly clear", "🌤️", "🌙"], 2: ["Partly cloudy", "⛅", "☁️"],
+  3: ["Overcast", "☁️", "☁️"], 45: ["Fog", "🌫️", "🌫️"], 48: ["Freezing fog", "🌫️", "🌫️"],
+  51: ["Light drizzle", "🌦️", "🌧️"], 53: ["Drizzle", "🌦️", "🌧️"], 55: ["Heavy drizzle", "🌧️", "🌧️"],
+  61: ["Light rain", "🌦️", "🌧️"], 63: ["Rain", "🌧️", "🌧️"], 65: ["Heavy rain", "🌧️", "🌧️"],
+  66: ["Freezing rain", "🌧️", "🌧️"], 67: ["Freezing rain", "🌧️", "🌧️"],
+  71: ["Light snow", "🌨️", "🌨️"], 73: ["Snow", "🌨️", "🌨️"], 75: ["Heavy snow", "❄️", "❄️"],
+  77: ["Snow grains", "🌨️", "🌨️"], 80: ["Showers", "🌦️", "🌧️"], 81: ["Showers", "🌧️", "🌧️"],
+  82: ["Violent showers", "⛈️", "⛈️"], 85: ["Snow showers", "🌨️", "🌨️"], 86: ["Snow showers", "🌨️", "🌨️"],
+  95: ["Thunderstorm", "⛈️", "⛈️"], 96: ["Thunderstorm, hail", "⛈️", "⛈️"], 99: ["Thunderstorm, hail", "⛈️", "⛈️"],
+};
+const wx = (code, day = 1) => { const w = WMO[code] || ["", "🌡️", "🌡️"]; return { text: w[0], icon: day ? w[1] : w[2] }; };
+let weatherCode = null;
+function weather(w) {
+  const c = w.current, u = w.current_units.temperature_2m, d = w.daily;
+  weatherCode = c.weather_code;
+  const now = wx(c.weather_code, c.is_day);
+  $("wicon").textContent = now.icon;
+  $("wtemp").innerHTML = `${Math.round(c.temperature_2m)}<small>${u}</small>`;
+  $("wdesc").textContent = now.text;
+  $("wmeta").textContent = `Feels ${Math.round(c.apparent_temperature)}° · ` +
+    `↑ ${Math.round(d.temperature_2m_max[0])}° ↓ ${Math.round(d.temperature_2m_min[0])}° · ` +
+    `Humidity ${c.relative_humidity_2m}% · Wind ${Math.round(c.wind_speed_10m)} km/h`;
+  $("wcity").textContent = w.city || "";
+  $("wmini").textContent = `${now.icon}  ${Math.round(c.temperature_2m)}${u}  ${now.text}`;
+  const h = w.hourly, i0 = h.time.findIndex((t) => new Date(t) > new Date());
+  let hours = "";
+  for (let k = 0; k < 6 && i0 >= 0; k++) {
+    const i = i0 + k * 2;
+    if (i >= h.time.length) break;
+    const x = wx(h.weather_code[i], h.is_day[i]), rain = h.precipitation_probability[i];
+    hours += `<div><div class="t">${hm(new Date(h.time[i]))}</div><div class="i">${x.icon}</div>` +
+             `<div class="v">${Math.round(h.temperature_2m[i])}°${rain >= 30 ? `<span>${rain}%</span>` : ""}</div></div>`;
+  }
+  $("hours").innerHTML = hours;
+  let days = "";
+  for (let i = 1; i < d.time.length; i++) {
+    const t = new Date(d.time[i] + "T12:00"), x = wx(d.weather_code[i]);
+    days += `<div><div class="t">${DAYS[t.getDay()].slice(0, 3)}</div><div class="i">${x.icon}</div>` +
+            `<div class="v">${Math.round(d.temperature_2m_max[i])}°<span>${Math.round(d.temperature_2m_min[i])}°</span></div></div>`;
+  }
+  $("days").innerHTML = days;
+  $("weather").classList.remove("hidden");
+  applyTheme();
+}
+
+// ======================= themes / particles =======================
+// One half-resolution canvas at ~24 fps with a few dozen pre-rendered sprites.
+const THEMES = [
+  ["auto", "🪄", "Auto"], ["autumn", "🍂", "Autumn"], ["snow", "❄️", "Snow"], ["sakura", "🌸", "Sakura"],
+  ["fireflies", "✨", "Fireflies"], ["rain", "🌧️", "Rain"], ["mountains", "🏔️", "Mountains"],
+];
+const cv = $("fx"), ctx = cv.getContext("2d");
+const SCALE = 0.5, FPS_MS = 1000 / 24;
+let W = 0, H = 0, choice = "auto", active = "", parts = [], sprites = [];
+function resize() { W = cv.width = Math.round(innerWidth * SCALE); H = cv.height = Math.round(innerHeight * SCALE); }
+addEventListener("resize", () => { resize(); if (active) spawnAll(); });
+resize();
+
+function sprite(size, paint) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  paint(c.getContext("2d"), size);
+  return c;
+}
+function leafSprite(color, vein) {
+  return sprite(48, (g, s) => {
+    g.translate(s / 2, s / 2);
+    g.fillStyle = color;
+    g.beginPath();
+    g.moveTo(0, -20); g.bezierCurveTo(15, -12, 13, 10, 0, 20); g.bezierCurveTo(-13, 10, -15, -12, 0, -20);
+    g.fill();
+    g.strokeStyle = vein; g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(0, -17); g.lineTo(0, 22); g.stroke();
+  });
+}
+function petalSprite(color) {
+  return sprite(32, (g, s) => {
+    g.translate(s / 2, s / 2);
+    const gr = g.createRadialGradient(0, -4, 1, 0, 0, 14);
+    gr.addColorStop(0, "#fff0f6"); gr.addColorStop(1, color);
+    g.fillStyle = gr;
+    g.beginPath();
+    g.moveTo(0, 12); g.bezierCurveTo(12, 4, 9, -10, 3, -12); g.lineTo(0, -8); g.lineTo(-3, -12);
+    g.bezierCurveTo(-9, -10, -12, 4, 0, 12); g.fill();
+  });
+}
+function glowSprite(size, inner, outer) {
+  return sprite(size, (g, s) => {
+    const gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    gr.addColorStop(0, inner); gr.addColorStop(0.35, outer); gr.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = gr; g.fillRect(0, 0, s, s);
+  });
+}
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+const KINDS = {
+  autumn: { n: 26, init() {
+      sprites = [["#c0392b", "#7b241c"], ["#e67e22", "#a04000"], ["#f1c40f", "#9a7d0a"], ["#a04000", "#6e2c00"], ["#d35400", "#873600"]]
+        .map(([c, v]) => leafSprite(c, v)); },
+    spawn(p, top) { Object.assign(p, { x: rnd(-0.1, 1.1) * W, y: top ? rnd(-0.3, 0) * H : rnd(0, 1) * H,
+      s: rnd(0.5, 1.1), vy: rnd(12, 26), sway: rnd(18, 40), ph: rnd(0, 6.3), f: rnd(0.4, 0.9),
+      rot: rnd(0, 6.3), vr: rnd(-1.2, 1.2), dx: 0, img: sprites[(Math.random() * sprites.length) | 0] }); },
+    step(p, t, dt) { p.y += p.vy * dt; p.rot += p.vr * dt; p.dx = Math.sin(t * p.f + p.ph) * p.sway; },
+    draw(p) { const flip = Math.abs(Math.sin(p.rot * 0.7)) * 0.8 + 0.2;   // tumbling
+      ctx.setTransform(p.s * flip, 0, 0, p.s, p.x + p.dx, p.y); ctx.rotate(p.rot);
+      ctx.drawImage(p.img, -24, -24); } },
+  snow: { n: 70, init() { sprites = [glowSprite(32, "rgba(255,255,255,0.95)", "rgba(220,235,255,0.5)")]; },
+    spawn(p, top) { const z = Math.random();   // depth: far flakes small, slow, faint
+      Object.assign(p, { x: rnd(0, 1) * W, y: top ? rnd(-0.2, 0) * H : rnd(0, 1) * H, dx: 0,
+      s: 0.15 + z * 0.5, vy: 6 + z * 22, sway: 6 + z * 12, ph: rnd(0, 6.3), f: rnd(0.3, 0.8), a: 0.35 + z * 0.6 }); },
+    step(p, t, dt) { p.y += p.vy * dt; p.dx = Math.sin(t * p.f + p.ph) * p.sway; },
+    draw(p) { ctx.globalAlpha = p.a; ctx.setTransform(p.s, 0, 0, p.s, p.x + p.dx, p.y);
+      ctx.drawImage(sprites[0], -16, -16); } },
+  sakura: { n: 34, init() { sprites = ["#f8a5c2", "#f7c6d9", "#e88bb0"].map(petalSprite); },
+    spawn(p, top) { Object.assign(p, { x: rnd(-0.1, 1.2) * W, y: top ? rnd(-0.3, 0) * H : rnd(0, 1) * H, dx: 0,
+      s: rnd(0.5, 1.05), vy: rnd(9, 18), vx: rnd(-10, -4), sway: rnd(10, 26), ph: rnd(0, 6.3), f: rnd(0.5, 1.1),
+      rot: rnd(0, 6.3), vr: rnd(-1.5, 1.5), img: sprites[(Math.random() * sprites.length) | 0] }); },
+    step(p, t, dt) { p.y += p.vy * dt; p.x += p.vx * dt; p.rot += p.vr * dt;
+      p.dx = Math.sin(t * p.f + p.ph) * p.sway; },
+    draw(p) { const flip = Math.abs(Math.cos(p.rot)) * 0.7 + 0.3;
+      ctx.setTransform(p.s * flip, 0, 0, p.s, p.x + p.dx, p.y); ctx.rotate(p.rot);
+      ctx.drawImage(p.img, -16, -16); } },
+  fireflies: { n: 26, wrap: true,
+    init() { sprites = [glowSprite(48, "rgba(255,250,200,1)", "rgba(190,255,120,0.35)")]; },
+    spawn(p) { Object.assign(p, { x: rnd(0, 1) * W, y: rnd(0.25, 1) * H, s: rnd(0.4, 0.9),
+      vx: rnd(-8, 8), vy: rnd(-6, 6), ph: rnd(0, 6.3), f: rnd(0.4, 1.2), a: 0 }); },
+    step(p, t, dt) { p.vx = Math.max(-10, Math.min(10, p.vx + rnd(-6, 6) * dt));
+      p.vy = Math.max(-8, Math.min(8, p.vy + rnd(-6, 6) * dt));
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20;
+      if (p.y < H * 0.15) p.vy = Math.abs(p.vy); if (p.y > H + 20) p.y = H * 0.4;
+      p.a = Math.max(0, Math.sin(t * p.f + p.ph)) ** 2; },
+    draw(p) { ctx.globalAlpha = p.a; ctx.setTransform(p.s, 0, 0, p.s, p.x, p.y);
+      ctx.drawImage(sprites[0], -24, -24); } },
+  rain: { n: 90, init() { sprites = []; },
+    spawn(p, top) { const z = Math.random();
+      Object.assign(p, { x: rnd(-0.1, 1.2) * W, y: top ? rnd(-0.2, 0) * H : rnd(0, 1) * H,
+      len: 6 + z * 14, v: 180 + z * 220, a: 0.12 + z * 0.3 }); },
+    step(p, t, dt) { p.y += p.v * dt; p.x -= p.v * 0.18 * dt; },
+    draw(p) { ctx.globalAlpha = p.a; ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + p.len * 0.18, p.y - p.len); ctx.stroke(); } },
+  mountains: { n: 7, wrap: true,   // slow drifting mist banks
+    init() { sprites = [glowSprite(256, "rgba(235,238,245,0.30)", "rgba(220,226,238,0.12)")]; },
+    spawn(p) { Object.assign(p, { x: rnd(-0.3, 1.1) * W, y: rnd(0.35, 0.85) * H, s: rnd(1.4, 2.6),
+      sy: rnd(0.35, 0.6), v: rnd(3, 8), a: rnd(0.5, 0.9) }); },
+    step(p, t, dt) { p.x += p.v * dt; if (p.x - 128 * p.s > W) p.x = -128 * p.s; },
+    draw(p) { ctx.globalAlpha = p.a; ctx.setTransform(p.s, 0, 0, p.s * p.sy, p.x, p.y);
+      ctx.drawImage(sprites[0], -128, -128); } },
+};
+
+function resolveTheme() {
+  if (choice !== "auto" && KINDS[choice]) return choice;
+  if (weatherCode !== null) {
+    if ([51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99].includes(weatherCode)) return "rain";
+    if ([71, 73, 75, 77, 85, 86].includes(weatherCode)) return "snow";
+  }
+  const m = new Date().getMonth() + 1, h = new Date().getHours();
+  if (m === 12 || m <= 2) return "snow";
+  if (m <= 5) return "sakura";
+  if (m <= 9) return h >= 20 || h < 5 ? "fireflies" : "rain";
+  if (m <= 11) return h >= 20 || h < 5 ? "fireflies" : "autumn";
+  return "mountains";
+}
+// ---- paintings (lists come from livingroom.py: bundled + ~/Pictures/Living Room/<scene>) ----
+let scenes = {}, paintFront = $("paintA"), paintBack = $("paintB"), paintTimer = 0, lastPaint = "";
+function showPainting() {
+  const list = scenes[active] || [];
+  clearTimeout(paintTimer);
+  if (!list.length) return;
+  let pick = list[(Math.random() * list.length) | 0];
+  if (list.length > 1 && pick.url === lastPaint) pick = list[(list.indexOf(pick) + 1) % list.length];
+  lastPaint = pick.url;
+  const img = new Image();
+  img.onload = () => {
+    [paintFront, paintBack] = [paintBack, paintFront];
+    paintFront.style.backgroundImage = `url("${pick.url}")`;
+    paintFront.className = "paint on kb" + ((Math.random() * 3) | 0);
+    paintBack.classList.remove("on");
+    setTimeout(() => { if (!paintBack.classList.contains("on")) paintBack.className = "paint"; }, 3500);
+    $("caption").innerHTML = pick.artist ? `${pick.artist} · <i>${pick.title}</i>${pick.date ? ", " + pick.date : ""}` : "";
+  };
+  img.src = pick.url;
+  paintTimer = setTimeout(showPainting, 20 * 60 * 1000);
+}
+function spawnAll() {
+  const k = KINDS[active];
+  parts = [];
+  for (let i = 0; i < k.n; i++) { const p = {}; k.spawn(p, false); parts.push(p); }
+}
+function applyTheme() {
+  const t = resolveTheme();
+  if (t === active) return;
+  active = t;
+  document.body.dataset.theme = t;
+  KINDS[t].init();
+  spawnAll();
+  showPainting();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+}
+
+let last = 0, t0 = performance.now();
+function frame(ts) {
+  requestAnimationFrame(frame);
+  if (ts - last < FPS_MS) return;
+  const dt = Math.min(0.1, (ts - last) / 1000);
+  last = ts;
+  const k = KINDS[active];
+  if (!k || !k.n) return;
+  const t = (ts - t0) / 1000;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, W, H);
+  if (active === "rain") { ctx.strokeStyle = "#c9d6e3"; ctx.lineWidth = 1; }
+  for (const p of parts) {
+    k.step(p, t, dt);
+    if (!k.wrap && (p.y > H + 30 || p.x < -60 || p.x > W + 60)) k.spawn(p, true);
+    k.draw(p);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+}
+requestAnimationFrame(frame);
+
+// ======================= theme picker (tap the screen) =======================
+let pickerTimer = 0;
+const WEATHER_MODES = { card: ["🌤️", "Weather: card"], compact: ["🌡️", "Weather: small"], off: ["🚫", "Weather: off"] };
+let weatherMode = "card";
+function setWeatherMode(m) {
+  weatherMode = WEATHER_MODES[m] ? m : "card";
+  document.body.dataset.weather = weatherMode;
+}
+function renderPicker() {
+  const [wi, wn] = WEATHER_MODES[weatherMode];
+  $("picker").innerHTML = THEMES.map(([id, icon, name]) =>
+    `<button data-id="${id}" class="${id === choice ? "on" : ""}"><b>${icon}</b>${name}</button>`).join("") +
+    `<div class="sep"></div><button data-weather="1"><b>${wi}</b>${wn}</button>`;
+}
+function showPicker() {
+  renderPicker();
+  $("picker").classList.remove("hidden");
+  $("hint").style.opacity = 0;
+  clearTimeout(pickerTimer);
+  pickerTimer = setTimeout(() => {
+    $("picker").classList.add("hidden");
+    if (!playing && !$("hint").dataset.done) $("hint").style.opacity = 1;
+  }, 8000);
+}
+document.addEventListener("pointerdown", (e) => {
+  const b = e.target.closest && e.target.closest("#picker button");
+  if (b && b.dataset.weather && !$("picker").classList.contains("hidden")) {
+    const order = Object.keys(WEATHER_MODES);
+    setWeatherMode(order[(order.indexOf(weatherMode) + 1) % order.length]);
+    try { window.webkit.messageHandlers.lr.postMessage(JSON.stringify({ weather: weatherMode })); } catch (_) {}
+  } else if (b && !$("picker").classList.contains("hidden")) {
+    choice = b.dataset.id;
+    try { window.webkit.messageHandlers.lr.postMessage(JSON.stringify({ theme: choice })); } catch (_) {}
+    active = "";
+    applyTheme();
+  }
+  showPicker();
+});
+
+// ======================= now playing =======================
+let playing = false, loudSince = 0, quietSince = 0;
+const bars = [...document.querySelectorAll("#bars i")];
+function setPlaying(p) {
+  if (p === playing) return;
+  playing = p;
+  $("np").classList.toggle("hidden", !p);
+  $("hint").style.opacity = p || $("hint").dataset.done ? 0 : 1;
+}
+function level(l) {
+  const now = performance.now();
+  if (l > 0.008) { quietSince = 0; loudSince ||= now; } else { loudSince = 0; quietSince ||= now; }
+  if (!playing && loudSince && now - loudSince > 1200) setPlaying(true);
+  if (playing && quietSince && now - quietSince > 8000) setPlaying(false);
+  if (!playing) return;
+  const v = Math.min(1, l * 5);
+  bars.forEach((b) => { b.style.transform = `scaleY(${Math.max(0.12, v * (0.55 + 0.45 * Math.random()))})`; });
+}
+function nowplaying(t) {
+  $("nsrc").textContent = t ? t.source : "Now playing";
+  $("ntitle").textContent = t ? t.title : "Music";
+  $("nartist").textContent = t ? [t.artist, t.album].filter(Boolean).join(" — ") : "";
+  const cov = $("ncover");
+  if (t && t.cover) { cov.src = t.cover; cov.style.display = "block"; }
+  else { cov.removeAttribute("src"); cov.style.display = "none"; }
+}
+nowplaying(null);
+
+// ======================= bridge from livingroom.py =======================
+window.lr = (kind, data) => {
+  if (kind === "level") level(data);
+  else if (kind === "weather") weather(data);
+  else if (kind === "nowplaying") nowplaying(data);
+  else if (kind === "config") {
+    clock24 = data.clock24; choice = data.theme || "auto"; scenes = data.scenes || {};
+    setWeatherMode(data.weather);
+    if (choice === "aurora") choice = "mountains";
+    active = ""; applyTheme();
+  }
+};
+applyTheme();
+tick();
+// the hint is only for the first minute (it would collide with the painting caption)
+setTimeout(() => { $("hint").style.opacity = 0; $("hint").dataset.done = 1; }, 60000);
+</script>
+</body>
+</html>

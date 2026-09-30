@@ -1,0 +1,39 @@
+#!/bin/sh
+# Runs inside cage. The Yoga Book panel is portrait-native (1200x1920) and
+# wlroots ignores the panel-orientation quirk, so rotate the output here --
+# and only start the app once the rotation has really taken effect, because
+# cage 0.2 does not resize a window that was mapped before the rotation.
+T=${LIVINGROOM_TRANSFORM:-90}
+for i in $(seq 1 40); do
+  wlr-randr --output DSI-1 --transform "$T" 2>/dev/null
+  wlr-randr 2>/dev/null | grep -q "Transform: $T" && break
+  sleep 0.25
+done
+
+NAME=${LIVINGROOM_NAME:-Living Room}
+R=${XDG_RUNTIME_DIR:-/tmp}
+
+# AirPlay receiver (iPhone/iPad/Mac): mirroring appears full screen on top of
+# the dashboard (cage) and closes when the sender stops; audio goes to
+# PipeWire; track info and cover art go to files the dashboard shows.
+(while true; do
+   uxplay -n "$NAME" -nh -fs -vs waylandsink \
+     -md "$R/uxplay-metadata.txt" -ca "$R/uxplay-cover.jpg" -reset 15
+   sleep 3
+ done) &
+
+# DLNA/UPnP renderer ("Cast to device" in Windows, Android casting apps):
+# audio and video, on the Wi-Fi interface, with a stable id so senders
+# remember it.
+IFACE=$(ip -o route show default 2>/dev/null | awk '$5 ~ /^wl/ {print $5; exit}')
+UUID=$(python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, open('/etc/machine-id').read().strip() + '.livingroom'))")
+(while true; do
+   gmediarender -f "$NAME" ${IFACE:+-I "$IFACE"} -p 49494 -u "$UUID" \
+     --gstout-videosink=waylandsink --logfile=/dev/null
+   sleep 3
+ done) &
+
+# No desktop portal runs in this session (GTK would wait ~25 s for it), and
+# GTK's OpenGL renderer is more reliable than Vulkan (hasvk) on Cherry Trail.
+export GDK_DEBUG=no-portals GSK_RENDERER=ngl
+exec /usr/bin/python3 /opt/livingroom/livingroom.py

@@ -1,0 +1,65 @@
+[
+ {
+  "scene": "autumn",
+  "file": "autumn/grimshaw-house-in-a-clearing.jpg",
+  "title": "A House in a Clearing",
+  "artist": "John Atkinson Grimshaw",
+  "date": "c. 1870",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:John_Atkinson_Grimshaw_-_A_House_in_a_Clearing_-_69.71_-_Minneapolis_Institute_of_Art.jpg"
+ },
+ {
+  "scene": "autumn",
+  "file": "autumn/levitan-golden-autumn-slobodka.jpg",
+  "title": "Golden Autumn. Slobodka",
+  "artist": "Isaac Levitan",
+  "date": "1889",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:Isaac_Levitan_-_Golden_autumn._Slobodka_-_Google_Art_Project.jpg"
+ },
+ {
+  "scene": "snow",
+  "file": "snow/shishkin-winter.jpg",
+  "title": "Winter",
+  "artist": "Ivan Shishkin",
+  "date": "1890",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:Ivan_Shishkin_-_Winter.JPG"
+ },
+ {
+  "scene": "sakura",
+  "file": "sakura/van-gogh-orchard-in-blossom.jpg",
+  "title": "Orchard in Blossom (Plum Trees)",
+  "artist": "Vincent van Gogh",
+  "date": "1888",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:Vincent_van_Gogh_-_Orchard_in_Blossom_(Plum_Trees)_-_Google_Art_Project.jpg"
+ },
+ {
+  "scene": "fireflies",
+  "file": "fireflies/grimshaw-a-wet-moon.jpg",
+  "title": "A Wet Moon, Putney Road",
+  "artist": "John Atkinson Grimshaw",
+  "date": "1886",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:John_Atkinson_Grimshaw_-_A_Wet_Moon,_Putney_Road_(1886).jpg"
+ },
+ {
+  "scene": "rain",
+  "file": "rain/shishkin-rain-in-an-oak-forest.jpg",
+  "title": "Rain in an Oak Forest",
+  "artist": "Ivan Shishkin",
+  "date": "1891",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:Iwan_Iwanowitsch_Schischkin_-_Rain_in_an_Oak_Forest.jpg"
+ },
+ {
+  "scene": "mountains",
+  "file": "mountains/bierstadt-among-the-sierra-nevada.jpg",
+  "title": "Among the Sierra Nevada, California",
+  "artist": "Albert Bierstadt",
+  "date": "1868",
+  "license": "Public domain",
+  "source": "https://commons.wikimedia.org/wiki/File:Albert_Bierstadt_-_Among_the_Sierra_Nevada,_California_-_Google_Art_Project.jpg"
+ }
+]

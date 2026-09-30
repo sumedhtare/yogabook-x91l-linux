@@ -91,4 +91,33 @@ Config: jekhor's `config-6.17.4-yogabook1` + `make olddefconfig` + camera
 `IPU_BRIDGE`, `INTEL_SKL_INT3472`), `INTEL_CHT_MODEM`, `USB_NET_CDC_MBIM`,
 no `DEBUG_INFO`/`DEBUG_DRIVER`, `LOCALVERSION=-yogabook-cam`.
 
+## Living-room display (`livingroom/`)
+
+Turns the tablet into an always-on living-room screen. `LIVINGROOM=1 ./deploy.sh ...`
+or, on the tablet, `sudo livingroom/install.sh`.
+
+- **Kiosk session**: GDM auto-logs in user `livingroom` into the "Living Room"
+  Wayland session: [cage](https://github.com/cage-kiosk/cage) running a small
+  GTK4/WebKit app (`/opt/livingroom`). Log out to reach the normal login screen.
+- **Idle screen**: big clock, date, weather (Open-Meteo, location from IP or
+  `/etc/livingroom.conf`) over an animated painted scene. Tap the screen for
+  the picker: 🍂 autumn, ❄️ snow, 🌸 sakura, ✨ fireflies, 🌧️ rain,
+  🏔️ mountains (mist), or Auto (rain when it rains, otherwise by season), and
+  the weather card mode (card / small / off). Choices persist in
+  `~livingroom/.config/livingroom/state.json`.
+- **Paintings**: public-domain works in `app/scenes/<scene>/`
+  ([credits](livingroom/app/scenes/CREDITS.md)); drop your own images in
+  `~livingroom/Pictures/Living Room/<scene>/` and they replace the bundled ones
+  for that scene. One image per 20 minutes, slow Ken Burns drift.
+- **Bluetooth speaker** "Living Room": always discoverable, pairs without a PIN
+  (`livingroom-bt-agent`), class = loudspeaker; track title/artist via AVRCP.
+- **AirPlay** (iPhone/iPad/Mac): UxPlay, mirroring full screen with VA-API
+  decode, AirPlay audio with title/artist/cover art.
+- **DLNA / "Cast to device"** (Windows, Android apps): gmediarender on port
+  49494, audio + video, title/artist/art from the sender's metadata.
+- **Now playing**: whenever audio plays (any source) a card with the track and
+  a small level meter appears. The spectrum visualiser was dropped: too heavy
+  for the Atom.
+- CPU (Atom x5): idle scene ≈ 45–60 % of one core in WebKit + ~13 % python.
+
 See [NOTES.md](NOTES.md) for findings, gotchas and open issues.

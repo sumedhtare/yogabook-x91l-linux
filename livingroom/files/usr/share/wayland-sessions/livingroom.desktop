@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Living Room
+Comment=Full-screen clock, weather, music visualiser and cast receiver
+Exec=/usr/local/bin/livingroom-session
+Type=Application
+DesktopNames=livingroom

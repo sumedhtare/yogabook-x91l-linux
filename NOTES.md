@@ -83,3 +83,21 @@
 - Bluetooth wants `brcm/BCM4356A2.hcd`; no known-good UART version exists.
 - jekhor's kernel 6.17.4-yogabook1 can stay installed as a fallback (sound
   works there too; cameras/modem don't).
+
+## Living-room display
+
+- cage 0.2.1: no `-r` rotate option; rotate with `wlr-randr --transform 90`
+  and start the app only after it took effect (cage does not resize an
+  already-mapped window). GTK4 `win.fullscreen()` before the first commit
+  trips an assertion in cage — cage makes toplevels full screen anyway.
+- Without portals (`GDK_DEBUG=no-portals`, else GTK waits ~25 s for a portal
+  that never comes) GTK derives the DPI from the panel's physical size
+  (226 dpi) and WebKit zooms the page 2.35x: pin `gtk-xft-dpi` to 96.
+- `GSK_RENDERER=ngl`: the Vulkan (hasvk) path is flaky on Cherry Trail.
+- CPU budget: 60 fps CSS animations of large layers and a full-screen canvas
+  spectrum were too heavy (WebKit ~100 %); particles are drawn on a
+  half-resolution canvas at 24 fps, the painting drift is `steps()` at 5/s.
+- Audio level: `pw-record -P '{ stream.capture.sink=true }'` on the default
+  sink's monitor, 8 kHz mono, RMS 10x/s (1x/s during silence).
+- gmediarender's own system service must stay disabled (no display/session
+  audio there); Avahi is kept off the mobile-data interface.
