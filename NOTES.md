@@ -136,3 +136,10 @@
   must end with the session (`kill -0 $ME`), otherwise orphaned uxplay
   instances from an old session keep advertising "Living Room" and grab
   connections with no screen to draw on.
+- Laptop screen sharing: on the hybrid Intel+NVIDIA laptop the GStreamer VA
+  plugin probed the NVIDIA device and registered no elements; with
+  `LIBVA_DRIVER_NAME=iHD` (+ a private `GST_REGISTRY`, since the default
+  registry caches the empty result) `vah264lpenc` appears. Portal
+  `AvailableSourceTypes` = 7 includes VIRTUAL (4): mutter creates a
+  virtual monitor sized by the consumer's caps (request 1920x1200 right after
+  `pipewiresrc`). Receiver decodes in software (~1 core for 1920x1200@30).

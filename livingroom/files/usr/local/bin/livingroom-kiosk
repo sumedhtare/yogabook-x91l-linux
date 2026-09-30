@@ -7,6 +7,7 @@
 # connections without a screen to draw on.
 pkill -u "$(id -u)" -x uxplay 2>/dev/null
 pkill -u "$(id -u)" -x gmediarender 2>/dev/null
+pkill -u "$(id -u)" -f livingroom-screen-rx 2>/dev/null
 
 NAME=${LIVINGROOM_NAME:-Living Room}
 R=${XDG_RUNTIME_DIR:-/tmp}
@@ -37,6 +38,13 @@ UUID=$(python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, open('/etc/
 (while kill -0 "$ME" 2>/dev/null; do
    gmediarender -f "$NAME" ${IFACE:+-I "$IFACE"} -p 49494 -u "$UUID" \
      --gstout-videosink=waylandsink --logfile=/dev/null
+   sleep 3
+ done) &
+
+# "Share to Living Room" receiver (livingroom-share on a laptop): RTP H.264
+# on UDP 5600 + Opus on 5602; full screen while a stream arrives.
+(while kill -0 "$ME" 2>/dev/null; do
+   /usr/local/bin/livingroom-screen-rx
    sleep 3
  done) &
 

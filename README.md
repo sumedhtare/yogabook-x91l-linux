@@ -121,6 +121,14 @@ or, on the tablet, `sudo livingroom/install.sh`.
 - **Now playing**: whenever audio plays (any source) a card with the track and
   a small level meter appears. The spectrum visualiser was dropped: too heavy
   for the Atom.
+- **Share a laptop screen / extra monitor** (`laptop/`, install with
+  `laptop/install.sh` on a GNOME laptop): "Share Screen to Living Room"
+  mirrors a screen or window; "Extend to Living Room" makes the display an
+  extra 1920x1200 monitor (GNOME virtual monitor via the ScreenCast portal).
+  H.264 on the laptop's Intel iGPU (VA-API) + Opus audio over RTP/UDP to
+  `livingroom-screen-rx` on the tablet (ports 5600/5602), which shows it full
+  screen and returns to the dashboard 3 s after the stream stops. Click the
+  launcher again (or `livingroom-share --stop`) to stop.
 - CPU (Atom x5): idle scene ≈ 45–60 % of one core in WebKit + ~13 % python.
 
 See [NOTES.md](NOTES.md) for findings, gotchas and open issues.

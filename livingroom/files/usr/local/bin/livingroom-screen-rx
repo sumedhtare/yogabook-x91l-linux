@@ -1,0 +1,85 @@
+#!/usr/bin/python3
+# Receiver for "Share to Living Room" (livingroom-share on a laptop): H.264
+# video over RTP/UDP 5600 and Opus audio over RTP/UDP 5602. The window only
+# exists while a stream is coming in; 3 s after it stops the pipeline is torn
+# down (the dashboard comes back) and it waits for the next one.
+import os
+import sys
+
+import gi
+
+gi.require_version("Gst", "1.0")
+from gi.repository import GLib, Gst  # noqa: E402
+
+VIDEO_PORT, AUDIO_PORT = 5600, 5602
+# Software decoding: the Cherry Trail VA-API decoder is unreliable with some
+# streams (black frames without an error); override with LIVINGROOM_RX_DECODER.
+DECODER = os.environ.get("LIVINGROOM_RX_DECODER", "avdec_h264 max-threads=4")
+
+PIPELINE = f"""
+  udpsrc name=vsrc port={VIDEO_PORT} timeout=3000000000 buffer-size=4194304
+      caps="application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000"
+    ! rtpjitterbuffer latency=80 drop-on-latency=true
+    ! rtph264depay ! h264parse ! {DECODER}
+    ! videoconvert ! waylandsink sync=false
+  udpsrc port={AUDIO_PORT} buffer-size=1048576
+      caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=97,clock-rate=48000"
+    ! rtpjitterbuffer latency=80
+    ! rtpopusdepay ! opusdec ! audioconvert ! audioresample
+    ! autoaudiosink sync=false
+"""
+
+
+def log(msg):
+    print(f"screen-rx: {msg}", flush=True)
+
+
+class Receiver:
+    def __init__(self):
+        self.pipe = None
+        self.active = False
+        self.start()
+
+    def start(self):
+        self.pipe = Gst.parse_launch(PIPELINE)
+        bus = self.pipe.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self.on_message)
+        self.pipe.get_by_name("vsrc").get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER, self.on_first_buffer)
+        self.pipe.set_state(Gst.State.PLAYING)
+
+    def on_first_buffer(self, pad, info):
+        if not self.active:
+            self.active = True
+            GLib.idle_add(log, "stream started")
+        return Gst.PadProbeReturn.OK
+
+    def restart(self):
+        self.pipe.set_state(Gst.State.NULL)   # closes the video window
+        self.pipe.get_bus().remove_signal_watch()
+        self.active = False
+        self.start()
+        return False
+
+    def on_message(self, bus, msg):
+        t = msg.type
+        if t == Gst.MessageType.ELEMENT and msg.get_structure() \
+                and msg.get_structure().get_name() == "GstUDPSrcTimeout":
+            if self.active:
+                log("stream stopped")
+                GLib.idle_add(self.restart)
+        elif t == Gst.MessageType.ERROR:
+            err, dbg = msg.parse_error()
+            log(f"error: {err.message}")
+            GLib.timeout_add_seconds(2, self.restart)
+
+
+def main():
+    Gst.init(None)
+    Receiver()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

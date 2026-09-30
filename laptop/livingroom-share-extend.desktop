@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Extend to Living Room
+Comment=Use the living-room display as an extra monitor (click again to stop)
+Exec=livingroom-share --extend --toggle
+Icon=video-joined-displays
+Categories=Utility;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Share Screen to Living Room
+Comment=Mirror this laptop's screen or a window on the living-room display (click again to stop)
+Exec=livingroom-share --toggle
+Icon=video-display
+Categories=Utility;
