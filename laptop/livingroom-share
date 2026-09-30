@@ -169,8 +169,9 @@ class MonitorRecording:
     picture comes from here."""
     N = "org.gnome.Mutter.ScreenCast"
 
-    def __init__(self, connector, on_node):
+    def __init__(self, connector, on_node, on_closed):
         from gi.repository import Gio
+        self.connector = connector
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         self.session, = self.call("/org/gnome/Mutter/ScreenCast", self.N, "CreateSession",
                                   GLib.Variant("(a{sv})", ({},)))
@@ -179,6 +180,10 @@ class MonitorRecording:
                             GLib.Variant("(sa{sv})", (connector, {"cursor-mode": GLib.Variant("u", 1)})))
         self.bus.signal_subscribe(self.N, self.N + ".Stream", "PipeWireStreamAdded", stream,
                                   None, 0, lambda *a: on_node(a[5].unpack()[0]))
+        # GNOME ends monitor recordings whenever the display layout changes
+        # (a monitor plugged in or out, the virtual one being placed)
+        self.bus.signal_subscribe(self.N, self.N + ".Session", "Closed", self.session,
+                                  None, 0, lambda *a: on_closed(self))
         self.call(self.session, self.N + ".Session", "Start", None)
 
     def call(self, path, iface, method, args):
@@ -225,11 +230,11 @@ def place_virtual_monitor(before, found, tries=[0]):
                 GLib.idle_add(loop.quit)
                 return False
             return True
-        found(new[-1])
         placed = {lm[5][0][0] for lm in logical}
         virtual = [c for c in new if c not in placed]
-        if not virtual:
-            return False                  # GNOME remembered where it goes
+        if not virtual:                   # GNOME remembered where it goes
+            found(new[-1])
+            return False
         cfg, right = [], 0
         for x, y, scale, transform, primary, specs, _p in logical:
             conn = specs[0][0]
@@ -239,6 +244,7 @@ def place_virtual_monitor(before, found, tries=[0]):
         call("ApplyMonitorsConfig",
              GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, cfg, {})))
         log(f"extra monitor {virtual[0]} placed right of the others (x={right})")
+        GLib.timeout_add(1000, lambda: found(virtual[0]) and False)
     except Exception as e:
         log(f"could not place the virtual monitor: {e}")
     return False
@@ -293,6 +299,9 @@ def main():
                 Gst.PadProbeType.BUFFER, lambda *_: (cnt.__setitem__("n", cnt["n"] + 1), Gst.PadProbeReturn.OK)[1])
             GLib.timeout_add_seconds(1, lambda: (log(f"capture frames/s: {cnt['n']}"), cnt.__setitem__("n", 0), True)[2])
         pipe.set_state(Gst.State.PLAYING)
+        if state.get("notified"):
+            return
+        state["notified"] = True
         notify(("Living room is now an extra monitor" if EXTEND else "Sharing to the living room")
                + " — run it again to stop")
 
@@ -312,7 +321,24 @@ def main():
 
         def found(connector):
             log(f"extra monitor is {connector}")
-            state["rec"] = MonitorRecording(connector, lambda n: stream(f"path={n}"))
+            state["rec"] = MonitorRecording(connector, lambda n: stream(f"path={n}"), closed)
+
+        def closed(rec):
+            if state.get("rec") is not rec:
+                return
+            log("GNOME ended the recording (display layout changed); restarting it")
+            if "pipe" in state:
+                state.pop("pipe").set_state(Gst.State.NULL)
+            del state["rec"]
+
+            def again():
+                if rec.connector in virtual_monitors():
+                    found(rec.connector)
+                else:
+                    log("the extra monitor is gone")
+                    loop.quit()
+                return False
+            GLib.timeout_add(1000, again)
         GLib.timeout_add(500, place_virtual_monitor, before, found)
 
     cast = ScreenCast(bus, ready)

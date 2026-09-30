@@ -155,7 +155,9 @@
   so the portal stream is only kept (into a fakesink) to hold the virtual
   monitor, and the picture comes from RecordMonitor (allowed for session
   clients, no dialog). Verified by decoding a tablet-side pcap while changing
-  the wallpaper colour. (3) the
+  the wallpaper colour. GNOME closes RecordMonitor sessions whenever the
+  display layout changes (monitor unplugged, the virtual one being placed):
+  the sender listens for the Session "Closed" signal and records again. (3) the
   virtual monitor ("Meta-0, Virtual remote monitor") is created but not added
   to the logical layout, so the pointer/windows can't reach it -> the sender
   places it right of the existing monitors via DisplayConfig
