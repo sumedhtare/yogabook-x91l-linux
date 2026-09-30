@@ -8,6 +8,8 @@
 pkill -u "$(id -u)" -x uxplay 2>/dev/null
 pkill -u "$(id -u)" -x gmediarender 2>/dev/null
 pkill -u "$(id -u)" -f livingroom-screen-rx 2>/dev/null
+pkill -u "$(id -u)" -f livingroom-power 2>/dev/null
+pkill -u "$(id -u)" -x swayidle 2>/dev/null
 
 NAME=${LIVINGROOM_NAME:-Living Room}
 R=${XDG_RUNTIME_DIR:-/tmp}
@@ -45,6 +47,13 @@ UUID=$(python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, open('/etc/
 # on UDP 5600 + Opus on 5602; full screen while a stream arrives.
 (while kill -0 "$ME" 2>/dev/null; do
    /usr/local/bin/livingroom-screen-rx
+   sleep 3
+ done) &
+
+# Screen sleep/wake (settings in /etc/livingroom.conf).
+# Log: $R/livingroom-power.log
+(while kill -0 "$ME" 2>/dev/null; do
+   /usr/local/bin/livingroom-power 2>>"$R/livingroom-power.log"
    sleep 3
  done) &
 

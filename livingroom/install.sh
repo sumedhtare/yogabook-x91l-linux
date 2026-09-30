@@ -8,6 +8,7 @@
 #   painted scenes, now playing), auto-login as user "livingroom"
 # - Bluetooth speaker "Living Room" (auto-pairing agent)
 # - AirPlay receiver (UxPlay) and DLNA renderer (gmediarender)
+# - Screen sleep/wake: idle timeout, schedules, camera/light wake-up
 # Your GNOME account is untouched: log out of the kiosk to get the login screen.
 # Safe to re-run.
 set -euo pipefail
@@ -21,7 +22,7 @@ step "Packages"
 apt-get install -y -q sway wlr-randr grim gir1.2-webkit-6.0 gir1.2-gtk-4.0 python3-gi \
   python3-dbus python3-numpy pipewire-bin fonts-noto-color-emoji \
   uxplay i965-va-driver gstreamer1.0-plugins-bad gstreamer1.0-libav avahi-daemon avahi-utils \
-  gmediarender bluez
+  gmediarender bluez swayidle
 
 step "Kiosk user"
 id livingroom >/dev/null 2>&1 || useradd -m -c "Living Room" -s /bin/bash livingroom
@@ -50,8 +51,18 @@ chmod 755 /opt/livingroom/livingroom.py
 cd "$HERE/files"
 find . -type f | while read -r f; do
   dst=/${f#./}
-  [[ $dst == /etc/livingroom.conf && -e $dst ]] && { echo "  $dst (kept)"; continue; }
+  if [[ $dst == /etc/livingroom.conf && -e $dst ]]; then
+    # keep your settings; add sections that are new since it was installed
+    if ! grep -q '^sleep_after' "$dst"; then
+      sed -n '/^# --- Screen power/,$p' "$f" | { echo; cat; } >> "$dst"
+      echo "  $dst (kept, screen power settings added)"
+    else
+      echo "  $dst (kept)"
+    fi
+    continue
+  fi
   mode=644; [[ $dst == /usr/local/bin/* ]] && mode=755
+  [[ $dst == /etc/sudoers.d/* ]] && { visudo -cqf "$f" || exit 1; mode=440; }
   install -D -m "$mode" "$f" "$dst"
   echo "  $dst"
 done

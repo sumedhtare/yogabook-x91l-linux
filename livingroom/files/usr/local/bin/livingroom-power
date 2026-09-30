@@ -1,0 +1,435 @@
+#!/usr/bin/python3
+# Screen power for the living-room display (runs in the kiosk session).
+#
+# Settings: the "Screen power" part of /etc/livingroom.conf (re-read when the
+# file changes). In short:
+#   screen = auto          auto: sleep after `sleep_after` minutes without
+#                          touch; on: never sleep; sleep: dark unless woken
+#   sleep_after = 10
+#   wake_on = camera light what wakes the screen besides touch (or: none)
+#   schedule = mon-fri 23:00-07:00 sleep          several lines allowed;
+#   schedule = sat,sun 09:00-22:00 on             the last matching one wins
+#   schedule = daily 00:00-06:00 sleep wake_on=camera
+#
+# The screen never sleeps while another device is connected: a Bluetooth
+# device, an AirPlay/DLNA sender with an open connection, or a cast on screen
+# (AirPlay/DLNA video, a shared laptop screen).
+#
+# Touch is seen through swayidle (ext-idle-notify); the screen is switched
+# with sway's "output * power off|on" (the panel and backlight go off and
+# nothing is drawn, so the dashboard costs no CPU while dark).
+# Camera motion: yogabook-capture --motion (root, through sudoers), only
+# while the screen is dark. Light: the ambient light sensors (iio "als").
+import datetime
+import glob
+import json
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+CONF = os.environ.get("LIVINGROOM_CONF", "/etc/livingroom.conf")
+DASHBOARD_APP_ID = "local.livingroom"
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+GRACE = 6          # s after the screen goes dark before sensors count
+
+
+def log(msg):
+    print(f"{time.strftime('%H:%M:%S')} livingroom-power: {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- settings
+
+def parse_days(spec):
+    spec = spec.lower()
+    named = {"daily": DAYS, "everyday": DAYS, "weekdays": DAYS[:5], "weekends": DAYS[5:]}
+    if spec in named:
+        return {DAYS.index(d) for d in named[spec]}
+    out = set()
+    for part in spec.split(","):
+        if "-" in part:
+            a, b = (DAYS.index(x[:3]) for x in part.split("-"))
+            i = a
+            while True:
+                out.add(i)
+                if i == b:
+                    break
+                i = (i + 1) % 7
+        else:
+            out.add(DAYS.index(part[:3]))
+    return out
+
+
+def parse_wake(v):
+    v = v.replace(",", " ").split()
+    return {x for x in v if x in ("camera", "light")}
+
+
+def hm(s):
+    h, m = s.split(":")
+    return int(h) * 60 + int(m)
+
+
+class Settings:
+    def __init__(self):
+        self.mtime = None
+        self.load()
+
+    def load(self):
+        c = {"screen": "auto", "sleep_after": "10", "wake_on": "camera light",
+             "camera": "front", "camera_sensitivity": "3", "light_sensitivity": "30"}
+        schedules = []
+        try:
+            self.mtime = os.path.getmtime(CONF)
+            with open(CONF) as f:
+                for n, line in enumerate(f, 1):
+                    line = line.split("#", 1)[0].strip()
+                    if "=" not in line:
+                        continue
+                    k, v = (x.strip() for x in line.split("=", 1))
+                    if k == "schedule":
+                        try:
+                            schedules.append(self.schedule(v))
+                        except (ValueError, IndexError) as e:
+                            log(f"{CONF}:{n}: bad schedule {v!r} ({e})")
+                    else:
+                        c[k] = v
+        except OSError:
+            pass
+        self.default = c["screen"] if c["screen"] in ("auto", "on", "sleep") else "auto"
+        try:
+            self.sleep_after = max(0.5, float(c["sleep_after"])) * 60
+        except ValueError:
+            self.sleep_after = 600
+        if c["sleep_after"].strip() in ("0", "never"):
+            self.default = "on"
+        self.wake_on = parse_wake(c["wake_on"])
+        self.camera = c["camera"] if c["camera"] in ("front", "rear") else "front"
+        self.cam_level = float(c["camera_sensitivity"]) / 100
+        self.light_level = float(c["light_sensitivity"]) / 100
+        self.schedules = schedules
+        log(f"settings: screen={self.default} sleep_after={self.sleep_after / 60:g}min "
+            f"wake_on={','.join(sorted(self.wake_on)) or 'none'} schedules={len(schedules)}")
+
+    @staticmethod
+    def schedule(v):
+        # <days> <HH:MM>-<HH:MM> <on|auto|sleep> [wake_on=camera,light|none]
+        parts = v.split()
+        days = parse_days(parts[0])
+        start, end = (hm(x) for x in parts[1].split("-"))
+        mode = parts[2].lower()
+        if mode not in ("on", "auto", "sleep"):
+            raise ValueError(f"mode must be on, auto or sleep, not {mode}")
+        wake = None                   # None = the global wake_on
+        for p in parts[3:]:
+            if p.startswith("wake_on="):
+                wake = parse_wake(p.split("=", 1)[1])
+        return days, start, end, mode, wake
+
+    def maybe_reload(self):
+        try:
+            if os.path.getmtime(CONF) != self.mtime:
+                self.load()
+        except OSError:
+            pass
+
+    def now_mode(self):
+        """(mode, wake sensors) for this moment."""
+        t = datetime.datetime.now()
+        day, minute = t.weekday(), t.hour * 60 + t.minute
+        mode, wake, scheduled = self.default, None, False
+        for days, start, end, m, w in self.schedules:
+            if start < end:
+                hit = day in days and start <= minute < end
+            else:                     # past midnight: belongs to the start day
+                hit = (day in days and minute >= start) or ((day - 1) % 7 in days and minute < end)
+            if hit:
+                mode, wake, scheduled = m, w, True
+        if wake is None:
+            # a "sleep" schedule wakes by touch only unless it says wake_on=
+            wake = set() if scheduled and mode == "sleep" else self.wake_on
+        return mode, wake
+
+
+# ---------------------------------------------------------------- sway
+
+class Sway:
+    def __init__(self):
+        self.path = os.environ.get("SWAYSOCK")
+        if not self.path:
+            self.path = (glob.glob(f"/run/user/{os.getuid()}/sway-ipc.*.sock") or [None])[0]
+
+    def ipc(self, kind, payload=""):
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(5)
+        s.connect(self.path)
+        data = payload.encode()
+        s.sendall(b"i3-ipc" + struct.pack("<II", len(data), kind) + data)
+        head = b""
+        while len(head) < 14:
+            head += s.recv(14 - len(head))
+        n = struct.unpack("<I", head[6:10])[0]
+        body = b""
+        while len(body) < n:
+            body += s.recv(n - len(body))
+        s.close()
+        return json.loads(body)
+
+    def power(self, on):
+        self.ipc(0, f"output * power {'on' if on else 'off'}")
+
+    def is_on(self):
+        return all(o.get("power", True) for o in self.ipc(3))
+
+    def casts(self):
+        """Windows other than the dashboard (AirPlay, DLNA, laptop screen)."""
+        found = []
+
+        def walk(n):
+            if n.get("pid") and n.get("app_id") != DASHBOARD_APP_ID:
+                found.append(n.get("app_id") or n.get("name") or "window")
+            for c in n.get("nodes", []) + n.get("floating_nodes", []):
+                walk(c)
+        walk(self.ipc(4))
+        return found
+
+
+# ---------------------------------------------------------------- connected devices
+
+def bluetooth_connected():
+    try:
+        import dbus
+        om = dbus.Interface(dbus.SystemBus().get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        return [str(i["org.bluez.Device1"].get("Alias", "?"))
+                for i in om.GetManagedObjects().values()
+                if i.get("org.bluez.Device1", {}).get("Connected")]
+    except Exception:
+        return []
+
+
+def receivers_connected():
+    """Receivers (uxplay, gmediarender) with an established TCP connection:
+    an AirPlay sender connected, or a DLNA stream being fetched."""
+    established = set()
+    for f in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(f) as fh:
+                next(fh)
+                for line in fh:
+                    p = line.split()
+                    local, remote = p[1].split(":")[0], p[2].split(":")[0]
+                    # not to this machine itself (the dashboard polls
+                    # gmediarender over the LAN address)
+                    if p[3] == "01" and remote != local and not remote.startswith(
+                            ("0100007F", "0000000000000000FFFF00000100007F",
+                             "00000000000000000000000001000000")):
+                        established.add(p[9])      # socket inode
+        except OSError:
+            pass
+    busy = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comm = f.read().strip()
+            if comm not in ("uxplay", "gmediarender"):
+                continue
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                m = re.match(r"socket:\[(\d+)\]", os.readlink(f"/proc/{pid}/fd/{fd}"))
+                if m and m.group(1) in established:
+                    busy.append(comm)
+                    break
+        except OSError:
+            pass
+    return busy
+
+
+# ---------------------------------------------------------------- inputs
+
+class Touch(threading.Thread):
+    """Last user input, from swayidle (1 s idle timeout -> "idle", any input
+    after that -> "active")."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.active = True
+        self.last = time.time()
+
+    def run(self):
+        while True:
+            p = subprocess.Popen(["swayidle", "-w", "timeout", "1", "echo idle",
+                                  "resume", "echo active"],
+                                 stdout=subprocess.PIPE, text=True)
+            for line in p.stdout:
+                self.last = time.time()
+                self.active = line.strip() == "active"
+            log("swayidle exited; restarting")
+            time.sleep(5)
+
+    def last_input(self):
+        return time.time() if self.active else self.last - 1
+
+
+class Light:
+    """Ambient light sensors: a jump away from the recent average (lights
+    switched on, someone walking past close by)."""
+
+    def __init__(self):
+        self.devs = [d for d in glob.glob("/sys/bus/iio/devices/iio:device*")
+                     if open(f"{d}/name").read().strip() == "als"]
+        self.base = {}
+
+    def read(self, d):
+        with open(f"{d}/in_illuminance_raw") as f:
+            raw = float(f.read())
+        with open(f"{d}/in_illuminance_scale") as f:
+            return raw * float(f.read())
+
+    def reset(self):
+        self.base = {}
+
+    def changed(self, level):
+        hit = None
+        for d in self.devs:
+            try:
+                lux = self.read(d)
+            except (OSError, ValueError):
+                continue
+            b = self.base.get(d)
+            if b is None:
+                self.base[d] = lux
+                continue
+            if abs(lux - b) > max(level * b, 3):
+                hit = f"light {b:.0f} -> {lux:.0f} lux"
+                self.base[d] = lux
+            else:
+                self.base[d] = b * 0.9 + lux * 0.1
+        return hit
+
+
+class Camera:
+    """Motion from the camera while the screen is dark."""
+
+    def __init__(self):
+        self.proc = None
+        self.hit = None
+        self.failed_at = 0
+
+    def start(self, cam, level):
+        if self.proc or time.time() - self.failed_at < 60:
+            return
+        self.level = level
+        self.hit = None
+        self.proc = subprocess.Popen(["sudo", "-n", "/usr/local/bin/yogabook-capture", cam, "--motion"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
+        log(f"camera ({cam}) watching for motion")
+
+    def read(self, proc):
+        n = 0
+        for line in proc.stdout:
+            n += 1
+            try:
+                f = float(line.split()[1])
+            except (IndexError, ValueError):
+                continue
+            if f > self.level:
+                self.hit = f"camera motion {f * 100:.1f}%"
+        if proc.wait() != 0 and n == 0 and proc is self.proc:
+            log("camera did not start (in use by an app?); retrying in a minute")
+            self.failed_at = time.time()
+            self.proc = None
+
+    def stop(self):
+        if self.proc:
+            self.proc.terminate()
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+            log("camera off")
+
+    def take(self):
+        h, self.hit = self.hit, None
+        return h
+
+
+# ---------------------------------------------------------------- main loop
+
+def main():
+    cfg = Settings()
+    sway = Sway()
+    touch = Touch()
+    touch.start()
+    light, camera = Light(), Camera()
+    screen_on = True
+    sway.power(True)
+    last_wake = time.time()           # touch/sensor/connection/mode change
+    dark_since = 0
+    mode_prev = None
+    tick = 0
+    while True:
+        tick += 1
+        cfg.maybe_reload()
+        now = time.time()
+        mode, wake = cfg.now_mode()
+        if mode != mode_prev:
+            log(f"mode: {mode} (wake on: {','.join(sorted(wake)) or 'touch only'})")
+            if mode_prev is not None and screen_on:
+                last_wake = now       # e.g. "on" ended: the idle timer starts now
+            if mode == "sleep":
+                last_wake = 0         # go dark now
+            mode_prev = mode
+
+        # connected devices (every 2 s; cheap enough)
+        busy = []
+        if tick % 2 == 0 or not screen_on:
+            try:
+                busy = sway.casts()
+            except OSError:
+                pass
+            busy += receivers_connected() + bluetooth_connected()
+            if busy:
+                last_wake = now
+
+        last_wake = max(last_wake, touch.last_input())
+
+        if not screen_on and now - dark_since > GRACE:
+            why = None
+            if "light" in wake:
+                why = light.changed(cfg.light_level)
+            if "camera" in wake:
+                camera.start(cfg.camera, cfg.cam_level)
+                why = why or camera.take()
+            else:
+                camera.stop()
+            if why:
+                log(f"wake: {why}")
+                last_wake = now
+
+        want_on = mode == "on" or bool(busy) or now - last_wake < cfg.sleep_after
+        if want_on != screen_on:
+            try:
+                sway.power(want_on)
+                screen_on = want_on
+            except OSError as e:
+                log(f"sway: {e}")
+            if screen_on:
+                camera.stop()
+                log("screen on" + (f" ({', '.join(busy)} connected)" if busy else ""))
+            else:
+                dark_since = now
+                light.reset()
+                log("screen off")
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

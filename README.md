@@ -129,6 +129,16 @@ or, on the tablet, `sudo livingroom/install.sh`.
   `livingroom-screen-rx` on the tablet (ports 5600/5602), which shows it full
   screen and returns to the dashboard 3 s after the stream stops. Click the
   launcher again (or `livingroom-share --stop`) to stop.
+- **Screen sleep / wake** (`livingroom-power`, settings in the "Screen power"
+  part of `/etc/livingroom.conf`, applied within a second): sleep after
+  `sleep_after` minutes without a touch, or always on, plus any number of
+  `schedule = <days> <HH:MM>-<HH:MM> <on|auto|sleep> [wake_on=...]` lines. A
+  dark screen wakes on touch and, per `wake_on`, on camera motion
+  (`yogabook-capture --motion`, runs only while dark, ~16 % of one core) or
+  a change in room light (ambient light sensors). It never sleeps while
+  another device is connected (Bluetooth, an AirPlay/DLNA sender, a cast or
+  shared laptop screen). Dark = sway `output * power off`: panel off, no
+  drawing (~8 % CPU in total with the camera watching).
 - CPU (Atom x5): idle scene ≈ 45–60 % of one core in WebKit + ~13 % python.
 
 See [NOTES.md](NOTES.md) for findings, gotchas and open issues.

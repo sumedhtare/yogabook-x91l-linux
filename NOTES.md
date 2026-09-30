@@ -168,3 +168,15 @@
   to the logical layout, so the pointer/windows can't reach it -> the sender
   places it right of the existing monitors via DisplayConfig
   ApplyMonitorsConfig (temporary method, not saved).
+- Screen power: `output * power off` in sway makes every GStreamer
+  waylandsink in the session segfault (thread GstWlDisplay, in glib) - the
+  idle uxplay and livingroom-screen-rx die and the kiosk loops restart them
+  3 s later. Harmless because the screen never sleeps while a cast is shown.
+  Touch is detected with swayidle (`timeout 1 'echo idle' resume 'echo
+  active'`) since the kiosk user can't read /dev/input. Camera motion needs
+  the root-only AtomISP node -> sudoers rule for exactly
+  `yogabook-capture front|rear --motion`; the webcam bridge (/dev/video10)
+  would cost ~1.6 cores (ffmpeg scaling), `--motion` only compares a
+  120x45 grid of Y samples 3x a second (noise ~0.3 % changed, trigger 3 %).
+  Receiver audio sink: `autoaudiosink async-handling=true` spins at ~90 %
+  CPU with no audio; `pulsesink async=false` doesn't.

@@ -1,0 +1,3 @@
+# livingroom-power (kiosk user) watches for motion with the camera while the
+# screen is dark; the raw AtomISP node is root-only.
+livingroom ALL=(root) NOPASSWD: /usr/local/bin/yogabook-capture front --motion, /usr/local/bin/yogabook-capture rear --motion

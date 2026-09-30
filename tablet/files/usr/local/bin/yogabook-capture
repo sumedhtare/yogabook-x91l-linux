@@ -7,6 +7,10 @@
 # Usage: yogabook-capture front|rear      (frames: W*H*2 bytes each on stdout,
 #                                          front 1916x1076, rear 1616x1208)
 #        yogabook-capture front --probe   (print ISP WB/OB while streaming)
+#        yogabook-capture front --motion  (no frames: prints "motion <f>" ~3x
+#                                          a second, f = fraction of a coarse
+#                                          grid that changed; for the
+#                                          living-room display's wake-up)
 import fcntl
 import mmap
 import os
@@ -165,6 +169,7 @@ class ThreeA:
 def main():
     cam = sys.argv[1] if len(sys.argv) > 1 else "front"
     probe = "--probe" in sys.argv
+    motion = "--motion" in sys.argv
     test = None
     if "--test" in sys.argv:
         i = sys.argv.index("--test")
@@ -200,6 +205,9 @@ def main():
     keep = bpl * fh
     row = fw * 2
     n = 0
+    prev = None
+    if motion:
+        import numpy as np
     try:
         while True:
             b = bytearray(88)
@@ -229,6 +237,20 @@ def main():
                         f"OB(mode,gr,r,b,gb,start,end)={isp.get_ob()}")
                 if n >= 30:
                     break
+            elif motion:
+                m = bufs[idx]
+                if n % 10 == 0:
+                    # every 16th pixel of every 24th row (Y of YUYV); only
+                    # after the first 4 s, while auto exposure settles
+                    grid = np.frombuffer(m, np.uint8, count=keep).reshape(fh, bpl)
+                    cur = grid[::24, 0:row:32].astype(np.int16)
+                    if prev is not None and n > 120:
+                        d = cur - prev
+                        d -= int(np.median(d))      # exposure steps move everything
+                        out.write(f"motion {(np.abs(d) > 20).mean():.4f}\n".encode())
+                        out.flush()
+                    prev = cur
+                three_a.frame(m, keep)
             else:
                 m = bufs[idx]
                 if bpl == row:
