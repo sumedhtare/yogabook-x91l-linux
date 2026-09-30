@@ -419,6 +419,10 @@ function showPicker() {
 }
 document.addEventListener("pointerdown", (e) => {
   const b = e.target.closest && e.target.closest("#picker button");
+  try {   // tap log (livingroom.py journal) to debug touch mapping
+    window.webkit.messageHandlers.lr.postMessage(JSON.stringify({ tap: [Math.round(e.clientX), Math.round(e.clientY),
+      e.pointerType, b ? (b.dataset.id || "weather") : e.target.id || e.target.tagName] }));
+  } catch (_) {}
   if (b && b.dataset.weather && !$("picker").classList.contains("hidden")) {
     const order = Object.keys(WEATHER_MODES);
     setWeatherMode(order[(order.indexOf(weatherMode) + 1) % order.length]);

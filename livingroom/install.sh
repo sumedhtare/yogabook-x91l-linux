@@ -56,6 +56,10 @@ find . -type f | while read -r f; do
   echo "  $dst"
 done
 
+# touchscreen rotation for the kiosk (72-yogabook-touchscreen-rotate.rules)
+udevadm control --reload
+udevadm trigger --action=change --subsystem-match=input
+
 step "Session and auto-login"
 printf '[User]\nSession=livingroom\nSystemAccount=false\n' > /var/lib/AccountsService/users/livingroom
 chmod 600 /var/lib/AccountsService/users/livingroom

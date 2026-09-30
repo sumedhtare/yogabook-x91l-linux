@@ -1,0 +1,6 @@
+# The Yoga Book panel is portrait-native and mounted "right side up"; the
+# Living Room session (cage/wlroots) rotates the output 90 degrees but does not
+# rotate absolute touch coordinates, so taps land in the wrong place. Rotate
+# them in libinput. GNOME (mutter) sets its own calibration matrix for mapped
+# touchscreens, so the normal desktop is unaffected.
+ACTION=="add|change", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", ATTRS{name}=="HDP0001:00 2ABB:8102", ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"

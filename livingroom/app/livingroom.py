@@ -326,6 +326,8 @@ class App(Gtk.Application):
     def on_message(self, manager, value):
         try:
             msg = json.loads(value.to_string())
+            if "tap" in msg:
+                log(f"tap {msg['tap']}")
             if "theme" in msg:
                 self.conf["theme"] = msg["theme"]
                 save_state(theme=msg["theme"])

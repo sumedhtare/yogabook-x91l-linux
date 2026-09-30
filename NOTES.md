@@ -94,6 +94,12 @@
   that never comes) GTK derives the DPI from the panel's physical size
   (226 dpi) and WebKit zooms the page 2.35x: pin `gtk-xft-dpi` to 96.
 - `GSK_RENDERER=ngl`: the Vulkan (hasvk) path is flaky on Cherry Trail.
+- Touch: wlroots/cage does not rotate absolute touch coordinates with the
+  output transform, so taps landed in the wrong place (the first tap "worked"
+  because the picker opens anywhere). udev sets
+  `LIBINPUT_CALIBRATION_MATRIX=0 -1 1 1 0 0` on the HDP0001 touchscreen;
+  mutter sets its own matrix, so GNOME is unaffected. Taps are logged to the
+  session journal (`livingroom: tap [...]`).
 - CPU budget: 60 fps CSS animations of large layers and a full-screen canvas
   spectrum were too heavy (WebKit ~100 %); particles are drawn on a
   half-resolution canvas at 24 fps, the painting drift is `steps()` at 5/s.
