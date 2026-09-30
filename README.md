@@ -139,7 +139,11 @@ or, on the tablet, `sudo livingroom/install.sh`.
   (`yogabook-capture --motion`, runs only while dark, ~16 % of one core) or
   a change in room light (ambient light sensors). It never sleeps while
   another device is connected (Bluetooth, an AirPlay/DLNA sender, a cast or
-  shared laptop screen). Dark = sway `output * power off`: panel off, no
+  shared laptop screen). Brightness: auto from the ambient light sensors
+  (log scale, ~20 s average, 6-point dead band, 2 s fades - GNOME's version
+  followed the sensors' ~4 % noise and kept flickering) or fixed; the
+  keyboard backlight is kept off. Both set through logind (no root).
+  Dark = sway `output * power off`: panel off, no
   drawing (~8 % CPU in total with the camera watching).
 - CPU (Atom x5): idle scene ≈ 45–60 % of one core in WebKit + ~13 % python.
 

@@ -552,6 +552,14 @@ function renderScreen() {
       <span class="note">without a touch (also how long it stays on after waking)</span></div>
     <div class="row"><span class="lbl">Wake up on</span>${wakeBtns(power.wake_on, "wake")}
       <span class="note">a touch always wakes it</span></div>
+    <div class="row"><span class="lbl">Brightness</span>
+      <button data-a="bauto" class="${power.brightness === "auto" ? "on" : ""}">☀️ Auto</button>
+      <button data-a="bright" data-v="-10">−</button>
+      <span class="val">${pstatus && pstatus.brightness_now != null ? pstatus.brightness_now + "%" : "–"}</span>
+      <button data-a="bright" data-v="10">+</button>
+      <span class="note">${power.brightness === "auto" ? "follows the room light" + (pstatus && pstatus.lux != null ? ` (${pstatus.lux} lux)` : "") : "fixed; tap Auto to follow the room light"}</span></div>
+    <div class="row"><span class="lbl">Keyboard light</span>${[["off", "Off"], ["on", "On"]].map(([k, n]) =>
+      `<button data-a="kbd" data-v="${k}" class="${power.keyboard_light === k ? "on" : ""}">${n}</button>`).join("")}</div>
     <div class="row"><span class="lbl">Schedules</span>
       <span class="note">replace “Normally” while they run; if two overlap, the lower one wins</span></div>
     ${power.schedules.map((sc, i) => `<div class="sched"><div class="what">${daysText(sc.days)} · ${sc.start} – ${sc.end}
@@ -610,9 +618,15 @@ $("screen").addEventListener("click", (ev) => {
       if (i < 0) i = STEPS.length - 1;
       power.sleep_after = STEPS[Math.max(0, Math.min(STEPS.length - 1, i + +v))];
     } else if (a === "wake") power.wake_on = toggle(power.wake_on, v);
+    else if (a === "bauto") power.brightness = power.brightness === "auto" ? (pstatus && pstatus.brightness_now || 60) : "auto";
+    else if (a === "bright") {
+      const cur = power.brightness === "auto" ? (pstatus && pstatus.brightness_now || 60) : power.brightness;
+      power.brightness = Math.max(5, Math.min(100, Math.round((cur + +v) / 5) * 5));
+      if (pstatus) pstatus.brightness_now = power.brightness;
+    } else if (a === "kbd") power.keyboard_light = v;
     else if (a === "add") editing = { i: -1, s: { days: [0, 1, 2, 3, 4, 5, 6], start: "23:00", end: "07:00", mode: "sleep", wake_on: [] } };
     else if (a === "edit") editing = { i: +v, s: clone(power.schedules[+v]) };
-    if (["mode", "after", "wake"].includes(a)) post({ power_set: power });
+    if (["mode", "after", "wake", "bauto", "bright", "kbd"].includes(a)) post({ power_set: power });
   }
   renderScreen();
 });

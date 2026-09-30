@@ -11,6 +11,12 @@
 #   schedule = sat,sun 09:00-22:00 on             the last matching one wins
 #   schedule = daily 00:00-06:00 sleep wake_on=camera
 #
+# Also: screen brightness (auto from the ambient light sensors, or fixed)
+# and keeping the keyboard backlight off.
+#   brightness = auto      or a percentage
+#   brightness_min = 5     brightness_max = 100   (the auto range, %)
+#   keyboard_light = off   off: kept off; on: left to the keyboard driver
+#
 # The screen never sleeps while another device is connected: a Bluetooth
 # device, an AirPlay/DLNA sender with an open connection, or a cast on screen
 # (AirPlay/DLNA video, a shared laptop screen).
@@ -96,6 +102,8 @@ class Settings:
 
     def load(self):
         c = {"screen": "auto", "sleep_after": "10", "wake_on": "camera light",
+             "brightness": "auto", "brightness_min": "5", "brightness_max": "100",
+             "keyboard_light": "off",
              "camera": "front", "camera_sensitivity": "3", "light_sensitivity": "30"}
         schedules = []
         try:
@@ -121,6 +129,8 @@ class Settings:
                 o = json.load(f)
             c["screen"] = str(o.get("screen", c["screen"]))
             c["sleep_after"] = str(o.get("sleep_after", c["sleep_after"]))
+            c["brightness"] = str(o.get("brightness", c["brightness"]))
+            c["keyboard_light"] = str(o.get("keyboard_light", c["keyboard_light"]))
             c["wake_on"] = " ".join(o.get("wake_on", [])) or "none"
             schedules = []
             for sc in o.get("schedules", []):
@@ -144,6 +154,11 @@ class Settings:
         self.camera = c["camera"] if c["camera"] in ("front", "rear") else "front"
         self.cam_level = float(c["camera_sensitivity"]) / 100
         self.light_level = float(c["light_sensitivity"]) / 100
+        b = c["brightness"].strip().rstrip("%")
+        self.brightness = None if b == "auto" else max(1, min(100, float(b)))   # None = auto
+        self.b_min = max(1, min(100, float(c["brightness_min"])))
+        self.b_max = max(self.b_min, min(100, float(c["brightness_max"])))
+        self.kbd_off = c["keyboard_light"].strip().lower() != "on"
         self.schedules = schedules
         log(f"settings ({self.source}): screen={self.default} sleep_after={self.sleep_after / 60:g}min "
             f"wake_on={','.join(sorted(self.wake_on)) or 'none'} schedules={len(schedules)}")
@@ -172,6 +187,8 @@ class Settings:
         t = lambda m: f"{m // 60:02d}:{m % 60:02d}"
         return {"screen": self.default, "sleep_after": round(self.sleep_after / 60, 1),
                 "wake_on": sorted(self.wake_on), "source": self.source,
+                "brightness": "auto" if self.brightness is None else round(self.brightness),
+                "keyboard_light": "off" if self.kbd_off else "on",
                 "schedules": [{"days": sorted(d), "start": t(a), "end": t(b), "mode": m,
                                "wake_on": None if w is None else sorted(w)}
                               for d, a, b, m, w in self.schedules]}
@@ -333,6 +350,15 @@ class Light:
     def reset(self):
         self.base = {}
 
+    def lux(self):
+        vals = []
+        for d in self.devs:
+            try:
+                vals.append(self.read(d))
+            except (OSError, ValueError):
+                pass
+        return max(vals) if vals else None
+
     def changed(self, level):
         hit = None
         for d in self.devs:
@@ -400,6 +426,104 @@ class Camera:
         return h
 
 
+class Brightness:
+    """Backlight and keyboard light through logind (the session may set its
+    own seat's backlight and LEDs without root).
+
+    Auto: ambient light -> brightness on a log scale (eyes see light that way),
+    averaged over ~20 s so sensor noise (~4 %) never moves it, changed only
+    when the target is 6 points away, and faded over ~2 s. A big jump in room
+    light (lamp on/off) is followed at once."""
+    BL = "intel_backlight"
+    KBD = "ybwmi::kbd_backlight"
+    FULL_LUX = 300           # a bright room -> brightness_max
+
+    def __init__(self, light):
+        self.light = light
+        self.session = None
+        self.avg = None
+        self.lux = None
+        self.target = None
+        try:
+            with open(f"/sys/class/backlight/{self.BL}/max_brightness") as f:
+                self.max = int(f.read())
+        except OSError:
+            self.max = None
+        self.fading = None
+
+    def logind(self):
+        if self.session is None:
+            import dbus
+            bus = dbus.SystemBus()
+            self.session = dbus.Interface(
+                bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1/session/auto"),
+                "org.freedesktop.login1.Session")
+        return self.session
+
+    def current(self):
+        with open(f"/sys/class/backlight/{self.BL}/brightness") as f:
+            return int(f.read()) * 100 / self.max
+
+    def set_raw(self, subsystem, name, value):
+        try:
+            self.logind().SetBrightness(subsystem, name, int(value))
+        except Exception as e:
+            self.session = None
+            log(f"brightness: {e}")
+
+    def fade(self, pct):
+        pct = max(1, min(100, pct))
+        self.target = pct
+        if self.fading and self.fading.is_alive():
+            return                    # the running fade picks up the new target
+
+        def run():
+            while True:
+                cur = self.current()
+                goal = self.target
+                if abs(goal - cur) < 1:
+                    return
+                step = max(1, abs(goal - cur) / 10)
+                nxt = cur + step if goal > cur else cur - step
+                self.set_raw("backlight", self.BL, round(nxt * self.max / 100))
+                time.sleep(0.2)
+        self.fading = threading.Thread(target=run, daemon=True)
+        self.fading.start()
+
+    def update(self, cfg):
+        if self.max is None:
+            return
+        if cfg.brightness is not None:          # fixed
+            if self.target != cfg.brightness:
+                self.fade(cfg.brightness)
+            return
+        lux = self.light.lux()
+        if lux is None:
+            return
+        self.lux = lux
+        if self.avg is None or lux > self.avg * 3 + 5 or lux < self.avg / 3 - 5:
+            self.avg = lux                      # lights switched on/off
+        else:
+            self.avg = self.avg * 0.95 + lux * 0.05
+        import math
+        f = min(1.0, math.log10(self.avg + 1) / math.log10(self.FULL_LUX + 1))
+        want = cfg.b_min + (cfg.b_max - cfg.b_min) * f
+        if self.target is None or abs(want - self.target) >= 6 or \
+                (want in (cfg.b_min, cfg.b_max) and abs(want - self.target) >= 1):
+            self.fade(want)
+
+    def keyboard(self, cfg):
+        if not cfg.kbd_off:
+            return
+        try:
+            with open(f"/sys/class/leds/{self.KBD}/brightness") as f:
+                if int(f.read()) == 0:
+                    return
+        except OSError:
+            return
+        self.set_raw("leds", self.KBD, 0)
+
+
 # ---------------------------------------------------------------- main loop
 
 def main():
@@ -408,6 +532,7 @@ def main():
     touch = Touch()
     touch.start()
     light, camera = Light(), Camera()
+    bright = Brightness(light)
     screen_on = True
     sway.power(True)
     last_wake = time.time()           # touch/sensor/connection/mode change
@@ -458,6 +583,8 @@ def main():
         if busy or tick % 2 == 0:
             status = json.dumps({"settings": cfg.export(), "mode": mode, "wake": sorted(wake),
                                  "busy": busy, "screen_on": want_on,
+                                 "brightness_now": None if bright.target is None else round(bright.target),
+                                 "lux": None if bright.lux is None else round(bright.lux),
                                  "sleep_in": None if want_on is False or mode == "on" or busy
                                  else max(0, round(cfg.sleep_after - (now - last_wake)))})
             if status != last_status:
@@ -468,6 +595,10 @@ def main():
                     os.replace(STATUS + ".tmp", STATUS)
                 except OSError:
                     pass
+        if screen_on:
+            bright.update(cfg)
+        if tick % 3 == 0:
+            bright.keyboard(cfg)
         if want_on != screen_on:
             try:
                 sway.power(want_on)
@@ -476,6 +607,7 @@ def main():
                 log(f"sway: {e}")
             if screen_on:
                 camera.stop()
+                bright.target = None      # re-apply: the driver restores its own level
                 log("screen on" + (f" ({', '.join(busy)} connected)" if busy else ""))
             else:
                 dark_since = now

@@ -340,7 +340,9 @@ class App(Gtk.Application):
             if "power_set" in msg:
                 p = msg["power_set"]
                 clean = {"screen": p["screen"], "sleep_after": float(p["sleep_after"]),
-                         "wake_on": list(p["wake_on"]), "schedules": list(p["schedules"])}
+                         "wake_on": list(p["wake_on"]), "schedules": list(p["schedules"]),
+                         "brightness": p.get("brightness", "auto"),
+                         "keyboard_light": p.get("keyboard_light", "off")}
                 os.makedirs(os.path.dirname(POWER), exist_ok=True)
                 # survives a crash or power cut: on disk before it replaces
                 # the old file
