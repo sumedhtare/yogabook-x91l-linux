@@ -97,8 +97,10 @@ Turns the tablet into an always-on living-room screen. `LIVINGROOM=1 ./deploy.sh
 or, on the tablet, `sudo livingroom/install.sh`.
 
 - **Kiosk session**: GDM auto-logs in user `livingroom` into the "Living Room"
-  Wayland session: [cage](https://github.com/cage-kiosk/cage) running a small
-  GTK4/WebKit app (`/opt/livingroom`). Log out to reach the normal login screen.
+  Wayland session: [sway](https://swaywm.org) in kiosk mode
+  (`/etc/livingroom/sway.conf`: every window full screen, no cursor) running a
+  small GTK4/WebKit app (`/opt/livingroom`). GDM timed login brings the kiosk
+  back 10 s after the session ends. Log out to reach the normal login screen.
 - **Idle screen**: big clock, date, weather (Open-Meteo, location from IP or
   `/etc/livingroom.conf`) over an animated painted scene. Tap the screen for
   the picker: 🍂 autumn, ❄️ snow, 🌸 sakura, ✨ fireflies, 🌧️ rain,

@@ -103,10 +103,13 @@
 
 ## Living-room display
 
-- cage 0.2.1: no `-r` rotate option; rotate with `wlr-randr --transform 90`
-  and start the app only after it took effect (cage does not resize an
-  already-mapped window). GTK4 `win.fullscreen()` before the first commit
-  trips an assertion in cage — cage makes toplevels full screen anyway.
+- Compositor: started with cage 0.2.1, but it crashes
+  (`wlr_xdg_surface_schedule_configure: Assertion surface->initialized`) as
+  soon as a second window appears — i.e. every AirPlay/DLNA video — killing
+  the session. Replaced by sway with a kiosk config. sway counts output
+  transforms clockwise: `transform 270` = wlr-randr's `90`. GDM TimedLogin
+  re-logs the kiosk in if the session ever dies (AutomaticLogin fires only
+  once per boot).
 - Without portals (`GDK_DEBUG=no-portals`, else GTK waits ~25 s for a portal
   that never comes) GTK derives the DPI from the panel's physical size
   (226 dpi) and WebKit zooms the page 2.35x: pin `gtk-xft-dpi` to 96.

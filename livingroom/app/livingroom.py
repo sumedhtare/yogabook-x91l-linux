@@ -304,8 +304,7 @@ class App(Gtk.Application):
         s.set_enable_developer_extras(False)
         self.view.connect("load-changed", self.on_load)
         win.set_child(self.view)
-        # No win.fullscreen(): cage makes every toplevel full screen itself, and
-        # requesting it before the first commit trips an assertion in cage 0.2.
+        # No win.fullscreen(): the kiosk compositor makes every window full screen.
         win.present()
         # hide the pointer: nothing to click on
         win.set_cursor_from_name("none")

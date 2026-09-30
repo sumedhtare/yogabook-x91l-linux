@@ -18,7 +18,7 @@ export DEBIAN_FRONTEND=noninteractive
 step() { echo; echo "=== $*"; }
 
 step "Packages"
-apt-get install -y -q cage wlr-randr grim gir1.2-webkit-6.0 gir1.2-gtk-4.0 python3-gi \
+apt-get install -y -q sway wlr-randr grim gir1.2-webkit-6.0 gir1.2-gtk-4.0 python3-gi \
   python3-dbus python3-numpy pipewire-bin fonts-noto-color-emoji \
   uxplay i965-va-driver gstreamer1.0-plugins-bad gstreamer1.0-libav avahi-daemon avahi-utils \
   gmediarender bluez
@@ -65,8 +65,10 @@ printf '[User]\nSession=livingroom\nSystemAccount=false\n' > /var/lib/AccountsSe
 chmod 600 /var/lib/AccountsService/users/livingroom
 C=/etc/gdm3/custom.conf
 [[ -e $C.orig ]] || cp "$C" "$C.orig"
-sed -i '/^AutomaticLoginEnable=/d; /^AutomaticLogin=/d' "$C"
-sed -i '/^\[daemon\]/a AutomaticLoginEnable=True\nAutomaticLogin=livingroom' "$C"
+sed -i '/^AutomaticLoginEnable=/d; /^AutomaticLogin=/d; /^TimedLogin/d' "$C"
+# Automatic login happens once per boot; timed login also logs the kiosk back
+# in 10 s after the session ends (e.g. if the compositor crashes).
+sed -i '/^\[daemon\]/a AutomaticLoginEnable=True\nAutomaticLogin=livingroom\nTimedLoginEnable=True\nTimedLogin=livingroom\nTimedLoginDelay=10' "$C"
 
 step "Bluetooth speaker"
 B=/etc/bluetooth/main.conf
