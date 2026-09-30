@@ -1,0 +1,12 @@
+[Unit]
+Description=Living Room Miracast receiver (Wi-Fi Direct + Wi-Fi Display)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/bin/livingroom-miracast
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -180,3 +180,21 @@
   120x45 grid of Y samples 3x a second (noise ~0.3 % changed, trigger 3 %).
   Receiver audio sink: `autoaudiosink async-handling=true` spins at ~90 %
   CPU with no audio; `pulsesink async=false` doesn't.
+- Miracast / Wi-Fi Direct on this tablet (brcmfmac BCM4356 + the
+  NetworkManager-run wpa_supplicant):
+  * NetworkManager deletes every P2P group interface it did not create
+    ("NMSupplicantInterface is disposing (remove in wpa_supplicant)"), even
+    with the P2P device unmanaged -> groups made with wpa_cli die within a
+    second after WPS. So the connection must be made by NetworkManager: on
+    a sender's P2P-GO-NEG-REQUEST (seen on the wpa_supplicant control
+    socket) livingroom-miracast activates a temporary wifi-p2p connection
+    to that peer. NetworkManager negotiates with GO intent 7, so either side
+    can become owner; as owner it shares (its own dnsmasq, lease file
+    /var/lib/NetworkManager/dnsmasq-<iface>.leases gives the sender's IP).
+  * Discoverability: NetworkManager StartFind (listens between searches).
+    P2P_EXT_LISTEN 500/2000 was too little for a sender to find the tablet.
+  * An autonomous GO (P2P_GROUP_ADD) is found but NetworkManager/Android
+    senders negotiate instead of joining; and the firmware moved a 2.4 GHz
+    GO to the station's 5 GHz channel right after WPS (client: beacon loss).
+  * Reliability with the laptop stand-in: ~2/3; failures are negotiation
+    timeouts, the sender's retry usually works.

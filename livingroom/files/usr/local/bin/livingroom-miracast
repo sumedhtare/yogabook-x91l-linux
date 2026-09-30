@@ -1,0 +1,513 @@
+#!/usr/bin/python3
+# Miracast receiver ("Living Room") for the living-room display. Runs as root
+# (livingroom-miracast.service).
+#
+# 1. Wi-Fi Direct (through NetworkManager, see Receiver): discoverable as a
+#    Wi-Fi Display sink next to the normal Wi-Fi connection. A sender's
+#    request is answered with a push-button connection; the sender is group
+#    owner and gives the tablet an address (no route/DNS changes).
+# 2. Wi-Fi Display session: the sink connects to the sender's RTSP port 7236
+#    and answers its capability questions (M1-M7): H.264 up to 1080p30 /
+#    720p60 (what the Atom decodes in software), AAC or LPCM audio, RTP on
+#    UDP 1028.
+# 3. Playback: MPEG-TS over RTP -> livingroom-miracast-play in the kiosk
+#    session (full screen, like the other casts).
+#
+# Settings (/etc/livingroom.conf): miracast = on|off.
+# Log: journalctl -u livingroom-miracast
+import glob
+import os
+import pwd
+import re
+import select
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+NAME = "Living Room"
+P2P_DEV = "p2p-dev-wlp1s0"
+CTRL = "/run/wpa_supplicant"
+RTP_PORT = 1028
+RUN = "/run/livingroom-miracast"
+KIOSK_USER = "livingroom"
+CONF = "/etc/livingroom.conf"
+
+# Wi-Fi Display device information subelement: sink, session available,
+# RTSP port 7236, 50 Mbit/s
+WFD_DEVICE_INFO = "000600111c440032"
+# H.264 CBP+CHP, level 4.1; CEA modes 640x480p60 .. 1920x1080p30 (incl.
+# 1280x720p60), no VESA/handheld modes; native 1920x1080p30
+VIDEO_FORMATS = "38 00 02 08 000000FF 00000000 00000000 00 0000 0000 00 none none, " \
+                "01 08 000000FF 00000000 00000000 00 0000 0000 00 none none"
+AUDIO_CODECS = "AAC 00000001 00, LPCM 00000002 00"
+
+
+def log(msg):
+    print(f"livingroom-miracast: {msg}", flush=True)
+
+
+def conf():
+    c = {"miracast": "on", "miracast_freq": "0"}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.split("#", 1)[0]
+                if "=" in line:
+                    k, v = (x.strip() for x in line.split("=", 1))
+                    c[k] = v
+    except OSError:
+        pass
+    return c
+
+
+# ---------------------------------------------------------------- wpa_supplicant
+
+class Wpa:
+    """wpa_supplicant control interface (the NetworkManager-run instance)."""
+
+    def __init__(self, ifname, events=False):
+        self.ifname = ifname
+        self.local = f"/tmp/lr-miracast-{ifname}-{os.getpid()}-{'ev' if events else 'rq'}"
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            os.unlink(self.local)
+        except OSError:
+            pass
+        self.sock.bind(self.local)
+        self.sock.connect(f"{CTRL}/{ifname}")
+        if events:
+            if self.request("ATTACH") != "OK":
+                raise OSError("ATTACH failed")
+
+    def request(self, cmd, timeout=10):
+        self.sock.send(cmd.encode())
+        end = time.time() + timeout
+        while True:
+            r, _, _ = select.select([self.sock], [], [], max(0, end - time.time()))
+            if not r:
+                raise TimeoutError(cmd)
+            data = self.sock.recv(8192).decode(errors="replace")
+            if not data.startswith("<"):      # skip unsolicited events
+                return data.strip()
+
+    def event(self, timeout):
+        r, _, _ = select.select([self.sock], [], [], timeout)
+        if not r:
+            return None
+        data = self.sock.recv(8192).decode(errors="replace").strip()
+        return re.sub(r"^<\d>", "", data)
+
+    def close(self):
+        self.sock.close()
+        try:
+            os.unlink(self.local)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- playback
+
+def kiosk_env():
+    pw = pwd.getpwnam(KIOSK_USER)
+    run = f"/run/user/{pw.pw_uid}"
+    ways = sorted(glob.glob(f"{run}/wayland-*[0-9]"))
+    if not ways:
+        return None
+    return pw, {"XDG_RUNTIME_DIR": run, "WAYLAND_DISPLAY": os.path.basename(ways[-1]),
+                "HOME": pw.pw_dir, "USER": KIOSK_USER, "PATH": "/usr/bin:/bin"}
+
+
+class Player:
+    def __init__(self):
+        self.proc = None
+
+    def start(self):
+        self.stop()
+        env = kiosk_env()
+        if not env:
+            log("no kiosk session to play in")
+            return
+        pw, e = env
+        self.proc = subprocess.Popen(["/usr/local/bin/livingroom-miracast-play", str(RTP_PORT)],
+                                     env=e, user=pw.pw_uid, group=pw.pw_gid,
+                                     start_new_session=True)
+        log("playing")
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            log("playback stopped")
+        self.proc = None
+
+
+# ---------------------------------------------------------------- Wi-Fi Display (RTSP)
+
+class Session(threading.Thread):
+    """One Wi-Fi Display session with a sender (we are the RTSP client)."""
+
+    def __init__(self, source_ip, player, on_end):
+        super().__init__(daemon=True)
+        self.ip, self.player, self.on_end = source_ip, player, on_end
+        self.cseq = 0
+        self.session = None
+        self.url = None
+        self.buf = b""
+        self.stopping = False
+
+    # -- messages
+    def send(self, text):
+        self.sock.sendall(text.encode())
+
+    def reply(self, cseq, body=None, extra=""):
+        msg = f"RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n{extra}"
+        if body:
+            msg += f"Content-Type: text/parameters\r\nContent-Length: {len(body)}\r\n\r\n{body}"
+        else:
+            msg += "\r\n"
+        self.send(msg)
+
+    def request(self, method, url, headers="", body=""):
+        self.cseq += 1
+        msg = f"{method} {url} RTSP/1.0\r\nCSeq: {self.cseq}\r\n{headers}"
+        if self.session and "Session:" not in headers:
+            msg += f"Session: {self.session}\r\n"
+        if body:
+            msg += f"Content-Type: text/parameters\r\nContent-Length: {len(body)}\r\n\r\n{body}"
+        else:
+            msg += "\r\n"
+        self.send(msg)
+
+    def read(self):
+        """One RTSP message: (first line, headers dict, body)."""
+        while b"\r\n\r\n" not in self.buf:
+            d = self.sock.recv(65536)
+            if not d:
+                raise ConnectionError("closed by the sender")
+            self.buf += d
+        head, self.buf = self.buf.split(b"\r\n\r\n", 1)
+        lines = head.decode(errors="replace").split("\r\n")
+        hdr = {}
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                hdr[k.strip().lower()] = v.strip()
+        n = int(hdr.get("content-length", 0))
+        while len(self.buf) < n:
+            d = self.sock.recv(65536)
+            if not d:
+                raise ConnectionError("closed by the sender")
+            self.buf += d
+        body, self.buf = self.buf[:n].decode(errors="replace"), self.buf[n:]
+        return lines[0], hdr, body
+
+    def answer(self, params):
+        known = {
+            "wfd_video_formats": VIDEO_FORMATS,
+            "wfd_audio_codecs": AUDIO_CODECS,
+            "wfd_client_rtp_ports": f"RTP/AVP/UDP;unicast {RTP_PORT} 0 mode=play",
+            "wfd_content_protection": "none",
+            "wfd_display_edid": "none",
+            "wfd_coupled_sink": "none",
+            "wfd_uibc_capability": "none",
+            "wfd_standby_resume_capability": "none",
+            "wfd_connector_type": "05",
+            "intel_friendly_name": NAME,
+            "intel_sink_manufacturer_name": "Living Room",
+            "intel_sink_model_name": "Yoga Book",
+        }
+        out = []
+        for p in params:
+            out.append(f"{p}: {known.get(p, 'none')}")
+        return "\r\n".join(out) + "\r\n" if out else ""
+
+    # -- session
+    def run(self):
+        try:
+            self.connect()
+            self.loop()
+        except Exception as e:
+            if not self.stopping:
+                log(f"session with {self.ip} ended: {e}")
+        finally:
+            self.player.stop()
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.on_end(self)
+
+    def connect(self):
+        end = time.time() + 30
+        while True:
+            try:
+                self.sock = socket.create_connection((self.ip, 7236), timeout=5)
+                break
+            except OSError:
+                if time.time() > end or self.stopping:
+                    raise
+                time.sleep(1)
+        self.sock.settimeout(None)
+        log(f"connected to {self.ip}:7236")
+
+    def loop(self):
+        sent_options = False
+        while not self.stopping:
+            first, hdr, body = self.read()
+            cseq = hdr.get("cseq", "0")
+            if first.startswith("RTSP/1.0"):          # a reply to our request
+                if "session" in hdr and not self.session:
+                    self.session = hdr["session"].split(";")[0]
+                    self.request("PLAY", self.url)         # M7
+                elif not first.startswith("RTSP/1.0 200"):
+                    log(f"sender answered: {first}")
+                continue
+            method = first.split()[0]
+            if method == "OPTIONS":                        # M1
+                self.reply(cseq, extra="Public: org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER\r\n")
+                if not sent_options:
+                    sent_options = True
+                    self.request("OPTIONS", "*", "Require: org.wfa.wfd1.0\r\n")   # M2
+            elif method == "GET_PARAMETER":                # M3, keep-alives (M16)
+                params = [x.strip() for x in body.splitlines() if x.strip()]
+                self.reply(cseq, self.answer(params) if params else None)
+            elif method == "SET_PARAMETER":                # M4, M5 triggers
+                self.reply(cseq)
+                vals = dict((k.strip(), v.strip()) for k, v in
+                            (x.split(":", 1) for x in body.splitlines() if ":" in x))
+                if "wfd_presentation_URL" in vals:
+                    self.url = vals["wfd_presentation_URL"].split()[0]
+                    log(f"format: {vals.get('wfd_video_formats', '?')} / "
+                        f"{vals.get('wfd_audio_codecs', '?')}")
+                trig = vals.get("wfd_trigger_method", "")
+                if trig == "SETUP":                        # M6
+                    self.player.start()
+                    self.request("SETUP", self.url or f"rtsp://{self.ip}/wfd1.0/streamid=0",
+                                 f"Transport: RTP/AVP/UDP;unicast;client_port={RTP_PORT}\r\n")
+                elif trig == "TEARDOWN":
+                    self.request("TEARDOWN", self.url or "*")
+                    log("sender stopped casting")
+                    return
+                elif trig == "PAUSE":
+                    self.request("PAUSE", self.url)
+                elif trig == "PLAY":
+                    self.request("PLAY", self.url)
+            else:
+                self.send(f"RTSP/1.0 501 Not Implemented\r\nCSeq: {cseq}\r\n\r\n")
+
+    def stop(self):
+        self.stopping = True
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- main
+
+class Receiver:
+    """Wi-Fi Direct through NetworkManager.
+
+    NetworkManager deletes every P2P group interface it did not create itself
+    (its supplicant wrapper "disposes" and removes it in wpa_supplicant), so
+    groups formed behind its back die within a second. Instead:
+    - NetworkManager's P2P find keeps the tablet discoverable (it listens
+      between searches); the Wi-Fi Display IE says "sink".
+    - wpa_supplicant's events tell us when a sender asks to connect (GO
+      negotiation / push-button request); we answer by activating a
+      temporary NetworkManager wifi-p2p connection to that sender.
+    - Either side may end up group owner (NetworkManager negotiates with
+      intent 7; Android asks the sink to be owner). As client we get an
+      address from the sender; as owner NetworkManager shares (dnsmasq) and
+      the sender's lease gives its address. RTSP runs on the sender."""
+    CON = "livingroom-miracast"
+
+    def __init__(self):
+        import dbus
+        os.makedirs(RUN, exist_ok=True)
+        self.ctl = Wpa(P2P_DEV)
+        self.ev = Wpa(P2P_DEV, events=True)
+        self.player = Player()
+        self.session = None
+        self.peer = None            # sender being connected / connected
+        self.connecting = False
+        self.ended_at = 0
+        bus = dbus.SystemBus()
+        nm = dbus.Interface(bus.get_object("org.freedesktop.NetworkManager",
+                                           "/org/freedesktop/NetworkManager"),
+                            "org.freedesktop.NetworkManager")
+        self.dev = dbus.Interface(bus.get_object("org.freedesktop.NetworkManager",
+                                                 nm.GetDeviceByIpIface(P2P_DEV)),
+                                  "org.freedesktop.NetworkManager.Device.WifiP2P")
+        self.find_at = 0
+
+    def cmd(self, c, quiet=False):
+        try:
+            r = self.ctl.request(c)
+        except (OSError, TimeoutError) as e:
+            r = f"FAIL ({e})"
+        if r.startswith("FAIL") and not quiet:
+            log(f"{c}: {r}")
+        return r
+
+    def nmcli(self, *args, timeout=90):
+        return subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=timeout)
+
+    def setup(self):
+        for x in (f"SET device_name {NAME}", "SET device_type 7-0050F204-1",
+                  "SET config_methods virtual_push_button physical_push_button",
+                  "SET p2p_go_intent 0", "SET wifi_display 1",
+                  f"WFD_SUBELEM_SET 0 {WFD_DEVICE_INFO}"):
+            self.cmd(x)
+        self.nmcli("connection", "delete", self.CON)
+        self.find()
+
+    def find(self):
+        """Discoverable (and able to see senders): NetworkManager P2P find."""
+        import dbus
+        try:
+            self.dev.StartFind({"timeout": dbus.Int32(600)})
+            if not self.find_at:
+                log(f"discoverable as \"{NAME}\"")
+        except dbus.DBusException as e:
+            log(f"StartFind: {e.get_dbus_message()}")
+        self.find_at = time.time()
+
+    def stop_find(self):
+        import dbus
+        try:
+            self.dev.StopFind()
+        except dbus.DBusException:
+            pass
+
+    def accept(self, peer):
+        if self.connecting or self.session or time.time() - self.ended_at < 3:
+            return
+        self.connecting, self.peer = True, peer
+        threading.Thread(target=self.connect, args=(peer,), daemon=True).start()
+
+    def connect(self, peer):
+        log(f"connecting {peer}")
+        try:
+            self.cmd("SET p2p_go_intent 0", quiet=True)
+            self.nmcli("connection", "delete", self.CON)
+            r = self.nmcli("connection", "add", "type", "wifi-p2p", "ifname", P2P_DEV,
+                           "con-name", self.CON, "wifi-p2p.peer", peer.upper(),
+                           "wifi-p2p.wfd-ies", WFD_DEVICE_INFO,
+                           "ipv4.method", "auto", "ipv4.never-default", "yes",
+                           "ipv4.ignore-auto-dns", "yes", "ipv6.method", "disabled",
+                           "connection.autoconnect", "no", "save", "no")
+            if r.returncode:
+                log(f"nmcli add: {r.stderr.strip()}")
+                return
+            r = self.nmcli("--wait", "60", "connection", "up", self.CON, timeout=75)
+            if r.returncode:
+                log(f"connection failed: {r.stderr.strip().splitlines()[0] if r.stderr.strip() else r.returncode}")
+                self.nmcli("connection", "delete", self.CON)
+                return
+            ip = self.sender_ip()
+            if not ip:
+                log("no address for the sender")
+                self.disconnect()
+                return
+            log(f"connected; sender at {ip}")
+            self.session = Session(ip, self.player, self.session_ended)
+            self.session.start()
+        except subprocess.TimeoutExpired:
+            log("connection timed out")
+            self.nmcli("connection", "delete", self.CON)
+        finally:
+            self.connecting = False
+            if not self.session:
+                self.find()           # activating stopped NetworkManager's find
+
+    def sender_ip(self):
+        """The sender's address. Group client (usual): it runs the DHCP
+        server. Group owner (Android asks for that): NetworkManager shares
+        the connection with its own dnsmasq, and the sender's lease shows up
+        in that dnsmasq's lease file."""
+        opts = self.nmcli("-g", "DHCP4.OPTION", "connection", "show", self.CON).stdout
+        m = re.search(r"dhcp_server_identifier = ([\d.]+)", opts)
+        if m:
+            return m.group(1)
+        iface = self.nmcli("-g", "GENERAL.IP-IFACE", "connection", "show", self.CON).stdout.strip()
+        end = time.time() + 30
+        while iface and time.time() < end:
+            try:
+                with open(f"/var/lib/NetworkManager/dnsmasq-{iface}.leases") as f:
+                    for line in f:
+                        p = line.split()
+                        if len(p) >= 3:
+                            return p[2]
+            except OSError:
+                pass
+            time.sleep(0.5)
+        return None
+
+    def session_ended(self, s):
+        self.session = None
+        self.ended_at = time.time()
+        self.disconnect()
+
+    def disconnect(self):
+        self.nmcli("connection", "down", self.CON)
+        self.nmcli("connection", "delete", self.CON)
+        self.peer = None
+        log("disconnected")
+        self.find()
+
+    def run(self):
+        self.setup()
+        while True:
+            try:
+                e = self.ev.event(1.0)
+            except OSError:
+                e = None
+            if e:
+                w = e.split()
+                if w[0] in ("P2P-GO-NEG-REQUEST", "P2P-PROV-DISC-PBC-REQ",
+                            "P2P-PROV-DISC-SHOW-PIN", "P2P-INVITATION-RECEIVED"):
+                    log(e)
+                    m = re.search(r"sa=(\S+)", e) if w[0] == "P2P-INVITATION-RECEIVED" else None
+                    self.accept(m.group(1) if m else w[1])
+                elif w[0] in ("P2P-GO-NEG-FAILURE", "P2P-GROUP-FORMATION-FAILURE",
+                              "P2P-GROUP-STARTED", "P2P-GROUP-REMOVED"):
+                    log(e)
+                    if w[0] == "P2P-GROUP-REMOVED" and self.session:
+                        self.session.stop()
+            # keep discoverable (NetworkManager's find times out after 600 s)
+            if not self.session and not self.connecting and time.time() - self.find_at > 300:
+                self.find()
+
+    def shutdown(self):
+        if self.session:
+            self.session.stop()
+        self.player.stop()
+        self.stop_find()
+        self.nmcli("connection", "down", self.CON)
+        self.nmcli("connection", "delete", self.CON)
+
+
+def main():
+    if conf().get("miracast", "on").lower() in ("off", "no", "0"):
+        log("disabled in /etc/livingroom.conf")
+        while True:
+            time.sleep(3600)
+    while not os.path.exists(f"{CTRL}/{P2P_DEV}"):
+        time.sleep(2)
+    r = Receiver()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        r.run()
+    finally:
+        r.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

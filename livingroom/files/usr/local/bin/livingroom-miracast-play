@@ -1,0 +1,15 @@
+#!/bin/sh
+# Plays a Miracast stream (MPEG-TS over RTP on UDP port $1) full screen in
+# the kiosk session; started by livingroom-miracast as the kiosk user.
+# Video: H.264 decoded in software (the Cherry Trail VA-API decoder is
+# unreliable); audio: AAC or LPCM, whichever the sender picked (decodebin).
+# Sinks are async=false so video never waits for audio (see
+# livingroom-screen-rx).
+exec gst-launch-1.0 -q \
+  udpsrc port="${1:-1028}" buffer-size=4194304 \
+    caps="application/x-rtp,media=video,clock-rate=90000,encoding-name=MP2T" \
+  ! rtpjitterbuffer latency=120 ! rtpmp2tdepay ! tsdemux name=d \
+  d. ! queue max-size-time=500000000 ! h264parse ! avdec_h264 max-threads=4 output-corrupt=false \
+     ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! waylandsink sync=false async=false \
+  d. ! queue max-size-time=500000000 ! decodebin ! audioconvert ! audioresample \
+     ! pulsesink sync=false async=false

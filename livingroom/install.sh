@@ -9,6 +9,7 @@
 # - Bluetooth speaker "Living Room" (auto-pairing agent)
 # - AirPlay receiver (UxPlay) and DLNA renderer (gmediarender)
 # - Screen sleep/wake: idle timeout, schedules, camera/light wake-up
+# - Miracast receiver (Android / Windows "Cast", Wi-Fi Direct)
 # Your GNOME account is untouched: log out of the kiosk to get the login screen.
 # Safe to re-run.
 set -euo pipefail
@@ -22,7 +23,7 @@ step "Packages"
 apt-get install -y -q sway wlr-randr grim gir1.2-webkit-6.0 gir1.2-gtk-4.0 python3-gi \
   python3-dbus python3-numpy pipewire-bin fonts-noto-color-emoji \
   uxplay i965-va-driver gstreamer1.0-plugins-bad gstreamer1.0-libav avahi-daemon avahi-utils \
-  gmediarender bluez swayidle
+  gmediarender bluez swayidle dnsmasq-base gstreamer1.0-plugins-ugly
 
 step "Kiosk user"
 id livingroom >/dev/null 2>&1 || useradd -m -c "Living Room" -s /bin/bash livingroom
@@ -93,6 +94,9 @@ sed -i -e 's/^#\?Name = .*/Name = Living Room/' \
 systemctl daemon-reload
 systemctl restart bluetooth
 systemctl enable --now livingroom-bt-agent.service
+
+step "Miracast receiver (Wi-Fi Direct)"
+systemctl enable --now livingroom-miracast.service
 
 step "Network announcements (AirPlay/DLNA) on Wi-Fi only"
 # gmediarender's own system service has no screen or session audio; the kiosk

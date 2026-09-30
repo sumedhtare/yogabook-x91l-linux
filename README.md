@@ -118,6 +118,15 @@ or, on the tablet, `sudo livingroom/install.sh`.
   decode, AirPlay audio with title/artist/cover art.
 - **DLNA / "Cast to device"** (Windows, Android apps): gmediarender on port
   49494, audio + video, title/artist/art from the sender's metadata.
+- **Miracast** (Android Cast / Smart View, Windows Win+K):
+  `livingroom-miracast` keeps the tablet discoverable as a Wi-Fi Display
+  sink over Wi-Fi Direct next to the normal Wi-Fi, answers a sender's
+  request through NetworkManager (either side may become group owner),
+  does the Wi-Fi Display RTSP handshake (H.264 up to 1080p30/720p60, AAC or
+  LPCM) and plays the MPEG-TS/RTP stream full screen
+  (`livingroom-miracast-play`). Tested with a stand-in sender on the laptop
+  (NetworkManager Wi-Fi Direct + a minimal RTSP source); about 2 in 3
+  connection attempts succeed, a retry usually works.
 - **Now playing**: whenever audio plays (any source) a card with the track and
   a small level meter appears. The spectrum visualiser was dropped: too heavy
   for the Atom.
