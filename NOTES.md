@@ -143,3 +143,11 @@
   `AvailableSourceTypes` = 7 includes VIRTUAL (4): mutter creates a
   virtual monitor sized by the consumer's caps (request 1920x1200 right after
   `pipewiresrc`). Receiver decodes in software (~1 core for 1920x1200@30).
+  Gotchas: (1) mutter only sends a frame when something changed (otherwise
+  empty buffers that pipewiresrc drops: "Buffer is empty"), so a still
+  desktop sent nothing and the receiver timed out -> the capture is put on a
+  live 30 fps `compositor` canvas that repeats the last frame. (2) the
+  virtual monitor ("Meta-0, Virtual remote monitor") is created but not added
+  to the logical layout, so the pointer/windows can't reach it -> the sender
+  places it right of the existing monitors via DisplayConfig
+  ApplyMonitorsConfig (temporary method, not saved).

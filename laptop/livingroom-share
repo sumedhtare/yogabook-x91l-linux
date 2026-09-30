@@ -142,17 +142,64 @@ def build_pipeline(fd, node):
     # For a virtual monitor the consumer's caps set its size: ask for exactly
     # the living-room display's resolution.
     size = f"! video/x-raw,width={WIDTH},height={HEIGHT} " if EXTEND else ""
-    video = (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=500 {size}"
-             f"! videoconvert ! videoscale ! video/x-raw,width={WIDTH},height={HEIGHT},pixel-aspect-ratio=1/1 "
-             f"! videorate ! video/x-raw,framerate={FPS}/1 ! queue leaky=downstream max-size-buffers=2 "
-             f"! videoconvert ! {enc} ! h264parse config-interval=-1 "
+    # GNOME sends a frame only when something changed (otherwise empty
+    # buffers that pipewiresrc drops), so a still screen would send nothing and
+    # the receiver would time out. Put the capture on a live 30 fps canvas
+    # (compositor over a black videotestsrc), which repeats the latest frame.
+    video = (f"compositor name=canvas background=black latency=40000000 "
+             f"! video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1 "
+             f"! queue leaky=downstream max-size-buffers=2 ! videoconvert "
+             f"! {enc} ! h264parse config-interval=-1 "
              f"! rtph264pay pt=96 config-interval=-1 mtu=1200 "
-             f"! udpsink host={host} port={VIDEO_PORT} sync=false")
+             f"! udpsink host={host} port={VIDEO_PORT} sync=false "
+             f"videotestsrc is-live=true pattern=black "
+             f"! video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1 ! canvas.sink_0 "
+             f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=500 {size}"
+             f"! videoconvert ! videoscale add-borders=true "
+             f"! video/x-raw,width={WIDTH},height={HEIGHT},pixel-aspect-ratio=1/1 "
+             f"! queue leaky=downstream max-size-buffers=2 ! canvas.sink_1 ")
     mon = monitor_source()
     audio = (f" pulsesrc device={mon} ! audioconvert ! audioresample "
              f"! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate=128000 "
              f"! rtpopuspay pt=97 ! udpsink host={host} port={AUDIO_PORT} sync=false") if mon else ""
     return Gst.parse_launch(video + audio)
+
+
+def place_virtual_monitor(tries=[0]):
+    """GNOME creates the virtual monitor ("Meta-N") but does not add it to the
+    desktop layout, so the pointer and windows cannot reach it. Put it to the
+    right of the existing monitors (temporary config: not saved)."""
+    from gi.repository import Gio
+    N, P = "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig"
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+
+    def call(m, a=None):
+        return bus.call_sync(N, P, N, m, a, None, 0, -1, None).unpack()
+
+    try:
+        serial, monitors, logical, _ = call("GetCurrentState")
+        mode = {}
+        for spec, modes, _props in monitors:
+            m = ([x for x in modes if x[6].get("is-current")]
+                 or [x for x in modes if x[6].get("is-preferred")] or modes)
+            mode[spec[0]] = m[0]
+        placed = {lm[5][0][0] for lm in logical}
+        virtual = [c for c in mode if c.startswith("Meta-") and c not in placed]
+        if not virtual:
+            tries[0] += 1
+            return tries[0] < 20          # keep polling for up to ~10 s
+        cfg, right = [], 0
+        for x, y, scale, transform, primary, specs, _p in logical:
+            conn = specs[0][0]
+            cfg.append((x, y, scale, transform, primary, [(conn, mode[conn][0], {})]))
+            right = max(right, x + round(mode[conn][1] / scale))
+        cfg.append((right, 0, 1.0, 0, False, [(virtual[0], mode[virtual[0]][0], {})]))
+        call("ApplyMonitorsConfig",
+             GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, cfg, {})))
+        log(f"extra monitor {virtual[0]} placed right of the others (x={right})")
+    except Exception as e:
+        log(f"could not place the virtual monitor: {e}")
+    return False
 
 
 def running_pid():
@@ -197,12 +244,14 @@ def main():
         b.connect("message::error", lambda _b, m: (log(f"error: {m.parse_error()[0].message}"), loop.quit()))
         b.connect("message::eos", lambda *_: loop.quit())
         pipe.set_state(Gst.State.PLAYING)
+        if EXTEND:
+            GLib.timeout_add(500, place_virtual_monitor)
         notify(("Living room is now an extra monitor" if EXTEND else "Sharing to the living room")
                + " — run it again to stop")
 
     cast = ScreenCast(bus, ready)
     for s in (signal.SIGINT, signal.SIGTERM):
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, s, lambda: (loop.quit(), False)[1])
+        signal.signal(s, lambda *_: GLib.idle_add(loop.quit))
     cast.start()
     try:
         loop.run()
