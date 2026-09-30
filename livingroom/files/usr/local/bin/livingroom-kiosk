@@ -1,17 +1,31 @@
 #!/bin/sh
 # Runs inside the Living Room compositor (sway, /etc/livingroom/sway.conf,
-# which also rotates the portrait-native panel to landscape).
+# which also rotates the portrait-native panel to landscape). Starts the cast
+# receivers, then becomes the dashboard (exec keeps this PID).
+
+# Receivers left over from an earlier session would still advertise and grab
+# connections without a screen to draw on.
+pkill -u "$(id -u)" -x uxplay 2>/dev/null
+pkill -u "$(id -u)" -x gmediarender 2>/dev/null
 
 NAME=${LIVINGROOM_NAME:-Living Room}
 R=${XDG_RUNTIME_DIR:-/tmp}
+ME=$$     # becomes the dashboard's PID; the loops below end with it
 
 # AirPlay receiver (iPhone/iPad/Mac): mirroring appears full screen on top of
-# the dashboard and closes when the sender stops; audio goes to
-# PipeWire; track info and cover art go to files the dashboard shows.
-# No -fs: the compositor makes every window full screen.
-(while true; do
-   uxplay -n "$NAME" -nh -vs waylandsink \
-     -md "$R/uxplay-metadata.txt" -ca "$R/uxplay-cover.jpg" -reset 15
+# the dashboard and closes when the sender stops; audio goes to PipeWire;
+# track info and cover art go to files the dashboard shows. No -fs: the
+# compositor makes every window full screen. -vsync no: with the default
+# audio/video timestamp sync, mirrored frames arrived "late" (negative
+# latency) and waylandsink dropped all of them - sound but a blank screen.
+# -avdec: software H.264 decoding. The Cherry Trail VA-API decoder (i965,
+# vah264dec) decodes iPhone mirror streams to black frames without an error;
+# libav handles them easily at mirror sizes (e.g. 500x1080 portrait).
+# Log: $R/uxplay.log (add -d for debug output)
+(while kill -0 "$ME" 2>/dev/null; do
+   uxplay -n "$NAME" -nh -vs waylandsink -vsync no -avdec \
+     -md "$R/uxplay-metadata.txt" -ca "$R/uxplay-cover.jpg" -reset 15 \
+     >"$R/uxplay.log" 2>&1
    sleep 3
  done) &
 
@@ -20,7 +34,7 @@ R=${XDG_RUNTIME_DIR:-/tmp}
 # remember it.
 IFACE=$(ip -o route show default 2>/dev/null | awk '$5 ~ /^wl/ {print $5; exit}')
 UUID=$(python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, open('/etc/machine-id').read().strip() + '.livingroom'))")
-(while true; do
+(while kill -0 "$ME" 2>/dev/null; do
    gmediarender -f "$NAME" ${IFACE:+-I "$IFACE"} -p 49494 -u "$UUID" \
      --gstout-videosink=waylandsink --logfile=/dev/null
    sleep 3

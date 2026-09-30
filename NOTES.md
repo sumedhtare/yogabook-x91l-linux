@@ -127,3 +127,12 @@
   sink's monitor, 8 kHz mono, RMS 10x/s (1x/s during silence).
 - gmediarender's own system service must stay disabled (no display/session
   audio there); Avahi is kept off the mobile-data interface.
+- AirPlay mirroring gave sound but a blank (black, full-screen) window. Two
+  causes: UxPlay's default audio/video sync dropped every frame as late
+  (`-vsync no`), and the i965 VA-API H.264 decoder produces black frames for
+  iPhone mirror streams without reporting an error (`-avdec`, software
+  decoding). Test pipelines with x264enc-encoded streams decode fine in
+  hardware, so this only shows with a real iPhone. Also: the receiver loops
+  must end with the session (`kill -0 $ME`), otherwise orphaned uxplay
+  instances from an old session keep advertising "Living Room" and grab
+  connections with no screen to draw on.
