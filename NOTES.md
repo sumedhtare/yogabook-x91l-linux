@@ -198,3 +198,9 @@
     GO to the station's 5 GHz channel right after WPS (client: beacon loss).
   * Reliability with the laptop stand-in: ~2/3; failures are negotiation
     timeouts, the sender's retry usually works.
+
+- Bluetooth audio stalls (~1 s) from a Pixel 5: it picked aptX HD (no error
+  recovery, 576 kbit/s) and livingroom-miracast's continuous Wi-Fi Direct
+  search kept hopping the shared radio onto 2.4 GHz. Fix: WirePlumber
+  bluez5.codecs = [ aac sbc_xq sbc ] (Ubuntu has no AAC plugin -> SBC) and
+  livingroom-miracast pauses discovery while an A2DP transport is active.

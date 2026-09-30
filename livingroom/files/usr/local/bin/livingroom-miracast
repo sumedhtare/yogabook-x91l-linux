@@ -346,6 +346,8 @@ class Receiver:
                                                  nm.GetDeviceByIpIface(P2P_DEV)),
                                   "org.freedesktop.NetworkManager.Device.WifiP2P")
         self.find_at = 0
+        self.bt_busy_at = 0         # last time Bluetooth audio was streaming
+        self.paused = False
 
     def cmd(self, c, quiet=False):
         try:
@@ -371,6 +373,8 @@ class Receiver:
     def find(self):
         """Discoverable (and able to see senders): NetworkManager P2P find."""
         import dbus
+        if self.paused:
+            return
         try:
             self.dev.StartFind({"timeout": dbus.Int32(600)})
             if not self.find_at:
@@ -385,6 +389,19 @@ class Receiver:
             self.dev.StopFind()
         except dbus.DBusException:
             pass
+
+    def bluetooth_streaming(self):
+        """A Bluetooth audio stream (A2DP transport) is active. Wi-Fi Direct
+        search hops the shared Wi-Fi/Bluetooth radio onto 2.4 GHz channels,
+        which makes Bluetooth audio stall for ~1 s, so it pauses meanwhile."""
+        import dbus
+        try:
+            om = dbus.Interface(dbus.SystemBus().get_object("org.bluez", "/"),
+                                "org.freedesktop.DBus.ObjectManager")
+            return any(i.get("org.bluez.MediaTransport1", {}).get("State") == "active"
+                       for i in om.GetManagedObjects().values())
+        except dbus.DBusException:
+            return False
 
     def accept(self, peer):
         if self.connecting or self.session or time.time() - self.ended_at < 3:
@@ -481,8 +498,19 @@ class Receiver:
                     log(e)
                     if w[0] == "P2P-GROUP-REMOVED" and self.session:
                         self.session.stop()
+            idle = not self.session and not self.connecting
+            if idle and self.bluetooth_streaming():
+                self.bt_busy_at = time.time()
+                if not self.paused:
+                    self.stop_find()
+                    self.paused = True
+                    log("Bluetooth audio playing: not discoverable meanwhile")
+            elif idle and self.paused and time.time() - self.bt_busy_at > 10:
+                self.paused = False
+                log("Bluetooth audio stopped")
+                self.find()
             # keep discoverable (NetworkManager's find times out after 600 s)
-            if not self.session and not self.connecting and time.time() - self.find_at > 300:
+            elif idle and not self.paused and time.time() - self.find_at > 300:
                 self.find()
 
     def shutdown(self):
