@@ -84,8 +84,14 @@
   = `BCM4356A2_001.003.015.0102.0307.hcd` from Lenovo's Windows Bluetooth driver
   (`yoga_book_bluetooth_201702.zip`, DS119810; `BtwSerialBus.inf` maps
   `ACPI\BCM2E8A` -> this file for Windows 10). Loads as "BCM4356 37.4MHz Lenovo
-  Yeti-0102 build 0307". Without it, A2DP audio was choppy/robotic (no
-  Wi-Fi/BT coexistence tuning; the Wi-Fi is on 2.4 GHz).
+  Yeti-0102 build 0307".
+- Bluetooth audio (A2DP from an iPhone) was robotic and dropped after a few
+  seconds while Wi-Fi was on 2.4 GHz: the BCM4356 shares one radio between
+  Wi-Fi and BT, and PipeWire logged "client missed wakeups" on the bluez
+  input. Use the router's 5 GHz network. That needs the Wi-Fi regulatory
+  domain set (`/etc/modprobe.d/cfg80211-regdom.conf`, IN): with the default
+  world domain 5 GHz channels are passive-scan only. The Windows Wi-Fi
+  driver (yoga_book_wifi_201707.zip) has no NVRAM/btc settings to borrow.
 - jekhor's kernel 6.17.4-yogabook1 can stay installed as a fallback (sound
   works there too; cameras/modem don't).
 
