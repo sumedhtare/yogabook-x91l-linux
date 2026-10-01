@@ -168,10 +168,25 @@
   to the logical layout, so the pointer/windows can't reach it -> the sender
   places it right of the existing monitors via DisplayConfig
   ApplyMonitorsConfig (temporary method, not saved).
-- Screen power: `output * power off` in sway makes every GStreamer
-  waylandsink in the session segfault (thread GstWlDisplay, in glib) - the
-  idle uxplay and livingroom-screen-rx die and the kiosk loops restart them
-  3 s later. Harmless because the screen never sleeps while a cast is shown.
+- Screen power: sway turning the output back on (`output * power on`, or
+  wlopm DPMS on) made every GStreamer waylandsink in the session segfault
+  (thread GstWlDisplay, "segfault at ffffffffffffffa8 ... in libglib").
+  NOT harmless: an AirPlay sender connecting while the screen sleeps wakes it
+  and uxplay died mid-connection ("AirPlay stopped working", 2026-10-01).
+  Cause: GStreamer 1.28.2 (still in main) output_done() uses
+  g_object_steal_data(output, "display"), so the second "done" event that
+  sway sends on power-on gets NULL -> g_mutex_lock(NULL+0x58). Known
+  upstream, unfixed: gstreamer#5144, #5329 (MR !11778 closed unmerged). Fix
+  (output-done-once.patch) returns early on the repeated done; do NOT just
+  switch steal_data to get_data - re-running g_hash_table_replace() with the
+  same output unrefs it via the table's value destroy (use-after-free). Fix:
+  livingroom/gst-wayland (patch + build.sh -> patched libgstwayland in
+  /usr/local/lib/x86_64-linux-gnu, found before /usr/lib; re-run build.sh
+  after an Ubuntu update of libgstreamer-plugins-bad1.0-0).
+  Tried and rejected: glimagesink survives power cycles, but the tablet
+  hard-froze (no log) the first time an iPhone connected to it while the
+  screen woke. Backlight 0 / bl_power=4 do not darken this panel (it still
+  glows); only output power off / DPMS does.
   Touch is detected with swayidle (`timeout 1 'echo idle' resume 'echo
   active'`) since the kiosk user can't read /dev/input. Camera motion needs
   the root-only AtomISP node -> sudoers rule for exactly

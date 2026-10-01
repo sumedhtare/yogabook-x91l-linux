@@ -25,6 +25,9 @@ apt-get install -y -q sway wlr-randr grim gir1.2-webkit-6.0 gir1.2-gtk-4.0 pytho
   uxplay i965-va-driver gstreamer1.0-plugins-bad gstreamer1.0-libav avahi-daemon avahi-utils \
   gmediarender bluez swayidle dnsmasq-base gstreamer1.0-plugins-ugly
 
+step "waylandsink fix (screen wake crashed every cast receiver)"
+"$HERE/gst-wayland/build.sh"
+
 step "Kiosk user"
 id livingroom >/dev/null 2>&1 || useradd -m -c "Living Room" -s /bin/bash livingroom
 usermod -aG audio,video,render,bluetooth livingroom

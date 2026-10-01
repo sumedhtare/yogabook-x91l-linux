@@ -1,0 +1,32 @@
+waylandsink: ignore repeated wl_output.done in output_done
+
+output_done() takes the GstWlDisplay with g_object_steal_data(), so it is
+NULL from the second "done" event on. Compositors send "done" again when an
+output changes - sway does on every "output * power on" (screen wake) - and
+every waylandsink then segfaulted in g_mutex_lock(NULL->outputs_mutex)
+("GstWlDisplay[...]: segfault at ffffffffffffffa8 ... in libglib").
+
+Return early instead: the output is registered on its first "done", and
+later property updates reach the GstWlOutput through its own listeners.
+(Keeping the pointer and re-running g_hash_table_replace() would unref the
+same output through the table's value destroy function on every "done".)
+Upstream: gstreamer#5144, #5329.
+
+--- a/gst-libs/gst/wayland/gstwldisplay.c
++++ b/gst-libs/gst/wayland/gstwldisplay.c
+@@ -431,9 +431,14 @@
+ {
+   GstWlOutput *output = GST_WL_OUTPUT (data);
+   GstWlDisplay *self = g_object_steal_data (G_OBJECT (output), "display");
+-  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
++  GstWlDisplayPrivate *priv;
+   const gchar *name = gst_wl_output_get_name (output);
+ 
++  /* already registered on the first done (the pointer was stolen then) */
++  if (!self)
++    return;
++  priv = gst_wl_display_get_instance_private (self);
++
+   GST_INFO ("Adding output %s (%p):", name, wl_output);
+   GST_INFO ("  Make:       %s", gst_wl_output_get_make (output));
+   GST_INFO ("  Model:      %s", gst_wl_output_get_model (output));
