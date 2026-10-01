@@ -34,6 +34,10 @@ STATE = os.path.expanduser("~/.config/livingroom/state.json")
 # what livingroom-power reports back.
 POWER = os.path.expanduser("~/.config/livingroom/power.json")
 POWER_STATUS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "livingroom-power.json")
+# Bluetooth speaker from the Speaker panel (read by livingroom-bt-agent,
+# which connects it while cast audio plays)
+SPEAKER = os.path.expanduser("~/.config/livingroom/speaker.json")
+SPEAKER_STATUS = "/run/livingroom-speaker.json"     # written by livingroom-bt-agent
 SCENES = ("autumn", "snow", "sakura", "fireflies", "rain", "mountains")
 MY_PICTURES = os.path.expanduser("~/Pictures/Living Room")   # <scene>/*.jpg of your own
 
@@ -92,6 +96,19 @@ def scene_images():
         mine = [i for i in imgs if not i["artist"]]
         out[scene] = mine or imgs      # your own pictures replace the bundled ones
     return out
+
+
+def write_json(path, data):
+    """Survives a crash or power cut: on disk before it replaces the old file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + ".tmp", path)
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    os.fsync(dfd)
+    os.close(dfd)
 
 
 def save_state(**kw):
@@ -238,6 +255,157 @@ class NowPlaying(threading.Thread):
             time.sleep(2)
 
 
+class Speakers:
+    """Speaker panel: finds, pairs and forgets Bluetooth speakers (BlueZ
+    allows this user), and saves the choice for livingroom-bt-agent. Calls
+    block, so they run on worker threads; the result goes to cb."""
+
+    A2DP_SINK = "0000110b-0000-1000-8000-00805f9b34fb"
+    SCAN = 40          # s
+
+    def __init__(self, conf, cb):
+        self.conf, self.cb = conf, cb
+        self.scan_until = 0
+        self.busy = ""             # "Pairing <name>…"
+        self.error = ""
+
+    @staticmethod
+    def bus():
+        import dbus
+        return dbus.SystemBus(private=True)
+
+    def setting(self):
+        try:
+            with open(SPEAKER) as f:
+                p = json.load(f)
+            return {"address": p.get("address", ""), "name": p.get("name", ""),
+                    "enabled": bool(p.get("enabled", True)), "source": "panel"}
+        except (OSError, ValueError):
+            on = str(self.conf.get("bluetooth_speaker_enabled", "yes")).lower() not in ("no", "off", "false", "0")
+            return {"address": self.conf.get("bluetooth_speaker", ""), "name": "",
+                    "enabled": on, "source": "conf"}
+
+    def save(self, **kw):
+        s = self.setting()
+        s.update(kw)
+        s.pop("source", None)
+        write_json(SPEAKER, s)
+        log(f"speaker -> {s}")
+
+    def status(self):
+        import dbus
+        st = self.setting()
+        st.update(scanning=time.time() < self.scan_until, busy=self.busy, error=self.error,
+                  paired=False, connected=False, found=[], agent=None)
+        try:
+            with open(SPEAKER_STATUS) as f:
+                a = json.load(f)
+            if a.get("speaker", "").lower() == st["address"].lower():
+                st["agent"] = a
+        except (OSError, ValueError):
+            pass
+        try:
+            bus = self.bus()
+            objs = dbus.Interface(bus.get_object("org.bluez", "/"),
+                                  "org.freedesktop.DBus.ObjectManager").GetManagedObjects()
+            bus.close()
+        except dbus.DBusException:
+            return st
+        want = st["address"].lower()
+        for path, ifaces in objs.items():
+            d = ifaces.get("org.bluez.Device1")
+            if not d:
+                continue
+            addr, alias = str(d.get("Address", "")), str(d.get("Alias", ""))
+            if want and want in (addr.lower(), alias.lower(), str(d.get("Name", "")).lower()):
+                st.update(paired=bool(d.get("Paired")), connected=bool(d.get("Connected")))
+                st["name"] = st["name"] or alias
+                continue
+            major = (int(d.get("Class", 0)) >> 8) & 0x1f
+            sink = self.A2DP_SINK in [str(u).lower() for u in d.get("UUIDs", [])]
+            # speakers/headphones, seen in this scan or paired before
+            if (major == 0x04 or (sink and major != 0x02)) and ("RSSI" in d or d.get("Paired")):
+                st["found"].append({"address": addr, "name": alias, "paired": bool(d.get("Paired")),
+                                    "rssi": int(d.get("RSSI", -999))})
+        st["found"].sort(key=lambda x: -x["rssi"])
+        return st
+
+    def push(self):
+        self.cb(self.status())
+
+    def run(self, fn, *a):
+        def go():
+            try:
+                fn(*a)
+            except Exception as e:
+                self.error = getattr(e, "get_dbus_message", lambda: str(e))() or str(e)
+                log(f"speaker: {self.error}")
+            self.busy = ""
+            self.push()
+        threading.Thread(target=go, daemon=True).start()
+
+    def scan(self):
+        def go():
+            import dbus
+            bus = self.bus()
+            a = dbus.Interface(bus.get_object("org.bluez", "/org/bluez/hci0"), "org.bluez.Adapter1")
+            a.SetDiscoveryFilter({"Transport": "bredr"})
+            a.StartDiscovery()          # ends when this connection closes
+            self.scan_until = time.time() + self.SCAN
+            try:
+                while time.time() < self.scan_until:
+                    self.push()
+                    time.sleep(2)
+            finally:
+                self.scan_until = 0
+                try:
+                    a.StopDiscovery()
+                except dbus.DBusException:
+                    pass
+                bus.close()
+        if time.time() >= self.scan_until:
+            self.error = ""
+            self.run(go)
+
+    def use(self, addr, name):
+        def go():
+            import dbus
+            self.scan_until = 0              # pairing goes faster without inquiry
+            bus = self.bus()
+            path = "/org/bluez/hci0/dev_" + addr.replace(":", "_").upper()
+            props = dbus.Interface(bus.get_object("org.bluez", path), "org.freedesktop.DBus.Properties")
+            if not props.Get("org.bluez.Device1", "Paired"):
+                self.busy = f"Pairing {name}…"
+                self.push()
+                dbus.Interface(bus.get_object("org.bluez", path), "org.bluez.Device1").Pair(timeout=60)
+            props.Set("org.bluez.Device1", "Trusted", True)
+            bus.close()
+            self.save(address=addr, name=name, enabled=True)
+        self.error = ""
+        self.run(go)
+
+    def remove(self):
+        def go():
+            import dbus
+            st = self.status()
+            if st["paired"] and st["address"]:
+                bus = self.bus()
+                path = "/org/bluez/hci0/dev_" + st["address"].replace(":", "_").upper()
+                try:
+                    dbus.Interface(bus.get_object("org.bluez", "/org/bluez/hci0"),
+                                   "org.bluez.Adapter1").RemoveDevice(path)
+                except dbus.DBusException:
+                    pass                     # a name from the config file, not an address
+                bus.close()
+            self.save(address="", name="")
+        self.error = ""
+        self.run(go)
+
+    def enable(self, on):
+        self.save(enabled=bool(on))
+        self.push()
+
+
 class Weather(threading.Thread):
     def __init__(self, conf, cb):
         super().__init__(daemon=True)
@@ -316,6 +484,7 @@ class App(Gtk.Application):
         Level(lambda rms: self.push("level", rms)).start()
         NowPlaying(lambda np_: self.push("nowplaying", np_)).start()
         Weather(self.conf, lambda w: self.push("weather", w)).start()
+        self.speakers = Speakers(self.conf, lambda st: self.push("speaker", st))
 
     def on_load(self, view, event):
         if event == WebKit.LoadEvent.FINISHED:
@@ -343,20 +512,20 @@ class App(Gtk.Application):
                          "wake_on": list(p["wake_on"]), "schedules": list(p["schedules"]),
                          "brightness": p.get("brightness", "auto"),
                          "keyboard_light": p.get("keyboard_light", "off")}
-                os.makedirs(os.path.dirname(POWER), exist_ok=True)
-                # survives a crash or power cut: on disk before it replaces
-                # the old file
-                with open(POWER + ".tmp", "w") as f:
-                    json.dump(clean, f, indent=1)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(POWER + ".tmp", POWER)
-                dfd = os.open(os.path.dirname(POWER), os.O_RDONLY)
-                os.fsync(dfd)
-                os.close(dfd)
+                write_json(POWER, clean)
                 log(f"screen power -> {clean}")
                 # livingroom-power applies it within a second
                 GLib.timeout_add(1500, lambda: self.push_power() and False)
+            if "speaker_get" in msg:
+                self.speakers.run(lambda: None)
+            if "speaker_scan" in msg:
+                self.speakers.scan()
+            if "speaker_use" in msg:
+                self.speakers.use(msg["speaker_use"]["address"], msg["speaker_use"]["name"])
+            if "speaker_remove" in msg:
+                self.speakers.remove()
+            if "speaker_enable" in msg:
+                self.speakers.enable(msg["speaker_enable"])
             if "weather" in msg:
                 self.conf["weather"] = msg["weather"]
                 save_state(weather=msg["weather"])

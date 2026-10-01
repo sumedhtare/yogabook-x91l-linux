@@ -261,9 +261,12 @@ def bluetooth_connected():
         import dbus
         om = dbus.Interface(dbus.SystemBus().get_object("org.bluez", "/"),
                             "org.freedesktop.DBus.ObjectManager")
+        # not speakers/headphones (major class audio/video): the room's own
+        # output speaker (bluetooth_speaker) stays connected all the time
         return [str(i["org.bluez.Device1"].get("Alias", "?"))
                 for i in om.GetManagedObjects().values()
-                if i.get("org.bluez.Device1", {}).get("Connected")]
+                if i.get("org.bluez.Device1", {}).get("Connected")
+                and (int(i["org.bluez.Device1"].get("Class", 0)) >> 8) & 0x1f != 0x04]
     except Exception:
         return []
 

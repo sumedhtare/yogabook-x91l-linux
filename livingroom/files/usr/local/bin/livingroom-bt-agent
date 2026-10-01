@@ -3,7 +3,23 @@
 # pairable as "Living Room", accept pairing without a PIN (like a real
 # speaker), and trust paired devices so they reconnect by themselves.
 # Audio itself is handled by PipeWire/WirePlumber in the Living Room session.
+#
+# Optionally the other direction too: with a speaker chosen in the
+# dashboard's Speaker panel (or bluetooth_speaker = <name or address> in
+# /etc/livingroom.conf), sound from the cast receivers (AirPlay,
+# DLNA, Miracast, laptop screen share) goes out to that speaker. It is
+# connected only while one of them plays audio and disconnected a minute
+# after they stop (also when it connects by itself), so it stays free
+# otherwise. It is paired the first time it is seen in pairing mode while
+# something plays. WirePlumber makes a connected Bluetooth speaker the
+# default output (51-livingroom-audio.conf). A phone's Bluetooth audio stays
+# on the tablet speakers.
+import json
+import os
+import pwd
+import subprocess
 import sys
+import time
 
 import dbus
 import dbus.mainloop.glib
@@ -13,6 +29,20 @@ from gi.repository import GLib
 NAME = sys.argv[1] if len(sys.argv) > 1 else "Living Room"
 AGENT_PATH = "/local/livingroom/agent"
 BUS = "org.bluez"
+CONF = "/etc/livingroom.conf"
+DEV = "org.bluez.Device1"
+RETRY = 30         # s before the first retry; doubles per failure up to MAX_RETRY
+MAX_RETRY = 600
+A2DP_SINK = "0000110b-0000-1000-8000-00805f9b34fb"     # the speaker's role
+A2DP_SOURCE = "0000110a-0000-1000-8000-00805f9b34fb"   # ours towards it
+# what the Speaker panel shows (written as root, readable by the kiosk)
+STATUS = "/run/livingroom-speaker.json"
+HOLD = 60          # s the speaker stays connected after the audio stops
+KIOSK_USER = "livingroom"
+PANEL = ".config/livingroom/speaker.json"     # in KIOSK_USER's home
+# PipeWire output streams of these (matched in the process command line)
+# count as cast audio
+CASTERS = ("uxplay", "gmediarender", "livingroom-screen-rx", "rtpmp2tdepay")
 
 
 def log(msg):
@@ -83,6 +113,269 @@ def setup_adapter(bus):
             log(f"{path}: '{NAME}' discoverable and pairable")
 
 
+def speaker_setting():
+    """(speaker name or address, enabled). The dashboard's Speaker panel
+    (PANEL file) replaces bluetooth_speaker/bluetooth_speaker_enabled from
+    CONF."""
+    want, enabled = "", "yes"
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.split("#", 1)[0]
+                if "=" in line:
+                    k, v = (x.strip() for x in line.split("=", 1))
+                    if k == "bluetooth_speaker":
+                        want = v
+                    elif k == "bluetooth_speaker_enabled":
+                        enabled = v
+    except OSError:
+        pass
+    enabled = enabled.lower() not in ("no", "off", "false", "0")
+    try:
+        with open(os.path.join(pwd.getpwnam(KIOSK_USER).pw_dir, PANEL)) as f:
+            p = json.load(f)
+        want, enabled = str(p.get("address") or ""), bool(p.get("enabled", True))
+    except (KeyError, OSError, ValueError):
+        pass
+    return want, enabled
+
+
+class Speaker:
+    """Keeps the configured Bluetooth speaker paired and connected."""
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.om = dbus.Interface(bus.get_object(BUS, "/"), "org.freedesktop.DBus.ObjectManager")
+        self.want, self.enabled = "", True
+        self.state = self.detail = None
+        self.failures = 0
+        self.busy = False          # a Pair/Connect call is in flight
+        self.next_try = 0
+        self.adapter = None        # discovering on this adapter
+        self.last_play = -HOLD - 1
+        GLib.timeout_add_seconds(3, self.tick)
+        GLib.idle_add(lambda: self.tick() and False)
+
+    def iface(self, path, name):
+        return dbus.Interface(self.bus.get_object(BUS, path), name)
+
+    def find(self, objs):
+        w = self.want.lower()
+        for path, ifaces in objs.items():
+            d = ifaces.get(DEV)
+            if d and w in (str(d.get("Address", "")).lower(), str(d.get("Alias", "")).lower(),
+                           str(d.get("Name", "")).lower()):
+                return path, d
+        return None, None
+
+    @staticmethod
+    def audio_up(objs, path):
+        """We are streaming to it (or could: an A2DP transport in our source role)."""
+        return any(p.startswith(path + "/") and
+                   str(i["org.bluez.MediaTransport1"].get("UUID", "")).lower() == A2DP_SOURCE
+                   for p, i in objs.items() if "org.bluez.MediaTransport1" in i)
+
+    def report(self, state, detail):
+        if (state, detail) == (self.state, self.detail):
+            return
+        self.state, self.detail = state, detail
+        try:
+            with open(STATUS + ".tmp", "w") as f:
+                json.dump({"speaker": self.want, "state": state, "detail": detail,
+                           "time": int(time.time())}, f)
+            os.chmod(STATUS + ".tmp", 0o644)
+            os.replace(STATUS + ".tmp", STATUS)
+        except OSError:
+            pass
+
+    @staticmethod
+    def phone_streaming(objs, speaker):
+        # a phone playing to the room: paging/scanning on the shared radio
+        # would make it stall
+        return any(i.get("org.bluez.MediaTransport1", {}).get("State") == "active"
+                   and not str(i["org.bluez.MediaTransport1"].get("Device", "")).startswith(
+                       speaker or "-")
+                   for i in objs.values())
+
+    @staticmethod
+    def pw_dump(what):
+        """pw-dump as root on the kiosk user's PipeWire socket (Node: ~40 ms)."""
+        try:
+            uid = pwd.getpwnam(KIOSK_USER).pw_uid
+            out = subprocess.run(["pw-dump", "-N", str(what)], capture_output=True, timeout=5,
+                                 env={"PIPEWIRE_RUNTIME_DIR": f"/run/user/{uid}"}).stdout
+            return json.loads(out or b"[]")
+        except (KeyError, OSError, ValueError, subprocess.TimeoutExpired):
+            return []
+
+    def cast_audio(self):
+        """A cast receiver has a running audio stream in the kiosk session.
+        The process is on the stream's client object (client.id)."""
+        clients = set()
+        for n in self.pw_dump("Node"):
+            info = n.get("info") or {}
+            props = info.get("props") or {}
+            if props.get("media.class") == "Stream/Output/Audio" and info.get("state") == "running":
+                clients.add(props.get("client.id"))
+        for c in clients - {None}:
+            for o in self.pw_dump(c):
+                props = (o.get("info") or {}).get("props") or {}
+                try:
+                    with open(f"/proc/{int(props.get('application.process.id'))}/cmdline", "rb") as f:
+                        cmd = f.read().decode(errors="replace")
+                except (TypeError, ValueError, OSError):
+                    cmd = str(props.get("application.process.binary", ""))
+                if any(x in cmd for x in CASTERS):
+                    return True
+        return False
+
+    def discover(self, on, objs):
+        if on and not self.adapter:
+            for path, ifaces in objs.items():
+                if "org.bluez.Adapter1" in ifaces:
+                    a = self.iface(path, "org.bluez.Adapter1")
+                    try:
+                        a.SetDiscoveryFilter({"Transport": "bredr"})
+                        a.StartDiscovery()
+                        self.adapter = path
+                        log(f"looking for speaker '{self.want}' (put it in pairing mode)")
+                    except dbus.DBusException as e:
+                        log(f"discovery: {e.get_dbus_message()}")
+                    return
+        elif not on and self.adapter:
+            try:
+                self.iface(self.adapter, "org.bluez.Adapter1").StopDiscovery()
+            except dbus.DBusException:
+                pass
+            self.adapter = None
+
+    def disconnect(self, path, why):
+        try:
+            self.iface(path, DEV).Disconnect()
+            log(f"speaker {path[-17:].replace('_', ':')}: {why}, disconnected")
+        except dbus.DBusException as e:
+            log(f"disconnect: {e.get_dbus_message()}")
+
+    def tick(self):
+        want, enabled = speaker_setting()
+        if (want, enabled) != (self.want, self.enabled):
+            if self.want and want != self.want:      # switched to another speaker
+                try:
+                    path, d = self.find(self.om.GetManagedObjects())
+                    if d and d.get("Connected"):
+                        self.disconnect(path, "replaced")
+                except dbus.DBusException:
+                    pass
+            self.want, self.enabled, self.next_try, self.failures = want, enabled, 0, 0
+            if not enabled:
+                self.last_play = -HOLD - 1
+            log(f"speaker: '{want}'{'' if enabled else ' (off)'}" if want
+                else "speaker: none (tablet speakers)")
+        if self.busy:
+            return True
+        try:
+            objs = self.om.GetManagedObjects()
+        except dbus.DBusException:
+            return True
+        if not self.want:
+            self.discover(False, objs)
+            self.report("none", "")
+            return True
+        now = time.monotonic()
+        if self.enabled and self.cast_audio():
+            if now - self.last_play > HOLD:
+                log("cast audio playing")
+                # a new session: one fresh try, then back off again
+                self.next_try, self.failures = 0, max(0, self.failures - 1)
+            self.last_play = now
+        path, d = self.find(objs)
+        if now - self.last_play > HOLD:
+            self.discover(False, objs)
+            if d and d.get("Connected"):
+                self.disconnect(path, "no cast audio" if self.enabled else "turned off")
+            if not self.enabled:
+                self.report("off", "")
+            elif self.state not in ("refused", "unreachable") or path is None:
+                self.report("idle" if path else "unpaired", "")
+            return True
+        if self.phone_streaming(objs, path):
+            self.discover(False, objs)
+            return True
+        if path is None:
+            self.discover(True, objs)
+            self.report("searching", "Looking for the speaker - put it in pairing mode")
+            return True
+        self.discover(False, objs)
+        if self.audio_up(objs, path):
+            if self.state != "connected":
+                self.failures = 0
+                self.report("connected", "")
+            return True
+        if now < self.next_try:
+            return True
+        self.busy = True
+        self.report("connecting", "")
+        dev = self.iface(path, DEV)
+        name = str(d.get("Alias", self.want))
+
+        def retry_later(state, msg):
+            self.failures += 1
+            wait = min(RETRY * 2 ** (self.failures - 1), MAX_RETRY)
+            self.next_try = time.monotonic() + wait
+            self.report(state, msg)
+            log(f"speaker {name}: {msg} (next try in {wait} s)")
+
+        def failed(e):
+            self.busy = False
+            msg = e.get_dbus_message() if isinstance(e, dbus.DBusException) else str(e)
+            # an unpaired speaker that left pairing mode: forget it so the
+            # next discovery finds it fresh
+            if not d.get("Paired"):
+                try:
+                    self.iface(path.rsplit("/", 1)[0], "org.bluez.Adapter1").RemoveDevice(path)
+                except dbus.DBusException:
+                    pass
+            retry_later("unreachable", f"can't connect ({msg}) - is it switched on?")
+
+        def check():
+            # Connected alone proves nothing: an Echo accepts the link and
+            # the stream setup, then closes the stream at once
+            self.busy = False
+            try:
+                up = self.audio_up(self.om.GetManagedObjects(), path)
+            except dbus.DBusException:
+                up = False
+            if up:
+                self.failures = 0
+                self.report("connected", "")
+                log(f"speaker {name} connected")
+            else:
+                self.disconnect(path, "refused the audio stream")
+                retry_later("refused", "the speaker refused audio from the tablet")
+            return False
+
+        def connected():
+            GLib.timeout_add_seconds(4, check)
+
+        def paired():
+            log(f"speaker {name} paired")
+            props = self.iface(path, "org.freedesktop.DBus.Properties")
+            props.Set(DEV, "Trusted", True)
+            dev.ConnectProfile(A2DP_SINK, reply_handler=connected, error_handler=failed, timeout=30)
+
+        # only the speaker direction: Connect() also brings up the speaker
+        # streaming *to* the tablet if it can (an Echo can), and then ours
+        # failed with "Device or resource busy"
+        if d.get("Paired"):
+            if not d.get("Trusted"):
+                self.iface(path, "org.freedesktop.DBus.Properties").Set(DEV, "Trusted", True)
+            dev.ConnectProfile(A2DP_SINK, reply_handler=connected, error_handler=failed, timeout=30)
+        else:
+            log(f"pairing speaker {name}")
+            dev.Pair(reply_handler=paired, error_handler=failed, timeout=60)
+        return True
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -91,6 +384,7 @@ def main():
     mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
     mgr.RequestDefaultAgent(AGENT_PATH)
     setup_adapter(bus)
+    Speaker(bus)
     # bluetoothd restarts or the adapter resetting would undo the settings
     bus.add_signal_receiver(lambda *a: GLib.timeout_add_seconds(2, lambda: setup_adapter(bus) and False),
                             signal_name="InterfacesAdded", dbus_interface="org.freedesktop.DBus.ObjectManager")

@@ -219,3 +219,58 @@
   search kept hopping the shared radio onto 2.4 GHz. Fix: WirePlumber
   bluez5.codecs = [ aac sbc_xq sbc ] (Ubuntu has no AAC plugin -> SBC) and
   livingroom-miracast pauses discovery while an A2DP transport is active.
+
+- Bluetooth speaker output (`bluetooth_speaker = <name|address>` in
+  livingroom.conf): livingroom-bt-agent (root) polls the kiosk's PipeWire
+  every 3 s (`PIPEWIRE_RUNTIME_DIR=/run/user/<uid> pw-dump Node`, ~40 ms;
+  ~1.8 % of a core in all, nothing while the setting is empty) for a running
+  Stream/Output/Audio whose process command line is uxplay, gmediarender,
+  livingroom-screen-rx or the Miracast gst-launch (rtpmp2tdepay). Nodes carry
+  no process id: it is on the client object (`pw-dump <client.id>`). Only then it connects the speaker (discovering BR/EDR and
+  pairing Just Works first if needed, retry every 30 s); 60 s after the last
+  running stream it disconnects it, also when the speaker connected by
+  itself. A phone's A2DP audio is deliberately not relayed (two A2DP links on
+  the one shared radio), and no paging/discovery happens while a phone
+  streams. WirePlumber bluez_output priority 3000 > SST speaker, so it
+  becomes the default sink and streams follow it
+  (linking.follow-default-target). livingroom-power ignores Bluetooth devices
+  of major class audio/video, so the speaker never counts as a connected
+  phone. Tested 2026-10-01 with silent pw-cat streams (argv0 "uxplay-test"
+  starts it, any other stream does not, discovery stops 60 s after); not
+  yet with a real speaker.
+  Speaker panel (picker -> 🔊 Speaker): livingroom.py scans/pairs/forgets
+  over BlueZ D-Bus itself (the D-Bus policy allows any user; pairing uses
+  the root agent as default agent) and writes
+  ~livingroom/.config/livingroom/speaker.json {address, name, enabled},
+  which the agent prefers over bluetooth_speaker/_enabled in the conf.
+  Off = agent treats it as never playing (disconnects it, no pw-dump).
+
+- Touch: WebKitGTK follows every touch pointerdown with an emulated mouse
+  pointerdown at the same spot 0.1-0.5 s later (tap log: 'touch' then
+  'mouse'). The page handled both, so a button opening a panel had it closed
+  again by the second event unless the finger lifted very fast. index.html
+  ignores mouse pointerdowns within 1 s of a touch.
+
+- Echo Studio as bluetooth_speaker (2026-10-01): pairs, but refuses audio
+  from the tablet. btmon: AVDTP Discover/SetConfiguration(SBC 48k)/Open all
+  accepted, then the Echo sends AVDTP Close within ~30 ms and the link drops
+  ~3 s later. Right after pairing the Echo had streamed TO the tablet
+  (bluez_input), i.e. it took "Living Room" (CoD loudspeaker, A2DP Sink in
+  SDP) as its own output speaker - what pairing from the Alexa app's "pair
+  new device" does. Advertising CoD laptop at connect time (btmgmt class 1
+  12) changed nothing, so it is remembered on the Echo: forget "Living Room"
+  in the Alexa app, re-pair with "Alexa, pair" (untested whether the Echo
+  then accepts a source that also has an A2DP Sink record). Device.Connect()
+  also brought up the Echo->tablet direction, after which ours failed with
+  EBUSY; the agent now uses ConnectProfile(A2DP Sink), counts the speaker as
+  connected only when an A2DP transport in our source role exists 4 s later,
+  otherwise disconnects and backs off 30 s doubling to 10 min (status in
+  /run/livingroom-speaker.json for the panel). The old 30 s retry loop during
+  an AirPlay session flapped WirePlumber's bluez node ("Object activation
+  aborted: proxy destroyed") and the iPhone's AirPlay session dropped.
+  Re-pairing with "Alexa, pair" fixed it: the Echo Studio accepts audio now.
+  It has no AVRCP absolute volume (no MediaTransport1.Volume), so PipeWire
+  uses software volume, and WirePlumber starts every new device route at
+  device.routes.default-sink-volume = 0.4^3 (6.4 %, -24 dB): AirPlay to the
+  Echo was very quiet. 51-livingroom-audio.conf sets it to 1.0; the iPhone
+  and the speaker's own buttons set the loudness.

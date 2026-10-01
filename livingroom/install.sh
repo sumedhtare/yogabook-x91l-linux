@@ -6,7 +6,8 @@
 #
 # - "Living Room" kiosk session (cage + WebKit page: clock, weather, animated
 #   painted scenes, now playing), auto-login as user "livingroom"
-# - Bluetooth speaker "Living Room" (auto-pairing agent)
+# - Bluetooth speaker "Living Room" (auto-pairing agent), and optionally
+#   output to your own Bluetooth speaker (bluetooth_speaker in livingroom.conf)
 # - AirPlay receiver (UxPlay) and DLNA renderer (gmediarender)
 # - Screen sleep/wake: idle timeout, schedules, camera/light wake-up
 # - Miracast receiver (Android / Windows "Cast", Wi-Fi Direct)
@@ -60,6 +61,9 @@ find . -type f | while read -r f; do
     if ! grep -q '^sleep_after' "$dst"; then
       sed -n '/^# --- Screen power/,$p' "$f" | { echo; cat; } >> "$dst"
       echo "  $dst (kept, screen power settings added)"
+    elif ! grep -q '^bluetooth_speaker' "$dst"; then
+      sed -n '/^# --- Bluetooth speaker/,$p' "$f" | { echo; cat; } >> "$dst"
+      echo "  $dst (kept, Bluetooth speaker setting added)"
     else
       echo "  $dst (kept)"
     fi
@@ -96,7 +100,8 @@ sed -i -e 's/^#\?Name = .*/Name = Living Room/' \
        -e 's/^#\?JustWorksRepairing = .*/JustWorksRepairing = always/' "$B"
 systemctl daemon-reload
 systemctl restart bluetooth
-systemctl enable --now livingroom-bt-agent.service
+systemctl enable livingroom-bt-agent.service
+systemctl restart livingroom-bt-agent.service
 
 step "Miracast receiver (Wi-Fi Direct)"
 systemctl enable --now livingroom-miracast.service
