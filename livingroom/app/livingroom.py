@@ -526,6 +526,11 @@ class App(Gtk.Application):
                 self.speakers.remove()
             if "speaker_enable" in msg:
                 self.speakers.enable(msg["speaker_enable"])
+            if "logout" in msg:
+                # ends the sway session; GDM shows the login screen (and its
+                # timed login brings the kiosk back unless an account is picked)
+                log("log out")
+                subprocess.Popen(["swaymsg", "exit"])
             if "weather" in msg:
                 self.conf["weather"] = msg["weather"]
                 save_state(weather=msg["weather"])

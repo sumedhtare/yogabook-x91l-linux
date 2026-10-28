@@ -3,4 +3,9 @@
 # sway in kiosk mode (/etc/livingroom/sway.conf) runs livingroom-kiosk; windows
 # opened later (AirPlay or DLNA video) go full screen on top of the dashboard,
 # which comes back when they close.
-exec sway -c /etc/livingroom/sway.conf
+sway -c /etc/livingroom/sway.conf
+# sway is gone (Log out, or a crash): end what it started too. logind keeps
+# a closed session's processes (KillUserProcesses=no), so the receivers and
+# livingroom-power kept running into the next session - in GNOME the keyboard
+# light stayed off. SIGTERM makes livingroom-power restore it.
+loginctl terminate-session "$XDG_SESSION_ID"

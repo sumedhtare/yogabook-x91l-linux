@@ -98,7 +98,7 @@
     display: flex; gap: 1.6vw; padding: 1.8vh 2vw; border-radius: 3vh;
     background: rgba(12, 12, 18, 0.72); border: 1px solid rgba(255,255,255,0.12);
     transition: opacity 0.5s; }
-  #picker button { all: unset; text-align: center; width: 7.4vw; padding: 1.2vh 0; border-radius: 2vh;
+  #picker button { all: unset; text-align: center; width: 6.8vw; padding: 1.2vh 0; border-radius: 2vh;
     font-size: 1.8vh; color: var(--dim); }
   #picker button b { display: block; font-size: 5vh; font-weight: normal; margin-bottom: 0.6vh; }
   #picker button.on { background: rgba(255,255,255,0.14); color: var(--fg); }
@@ -427,6 +427,9 @@ requestAnimationFrame(frame);
 
 // ======================= theme picker (tap the screen) =======================
 let pickerTimer = 0;
+// Log out needs a second tap within 4 s. The login screen then logs the
+// kiosk back in after 10 s unless you pick an account.
+let logoutArmed = false, logoutTimer = 0;
 const WEATHER_MODES = { card: ["🌤️", "Weather: card"], compact: ["🌡️", "Weather: small"], off: ["🚫", "Weather: off"] };
 let weatherMode = "card";
 function setWeatherMode(m) {
@@ -438,7 +441,8 @@ function renderPicker() {
   $("picker").innerHTML = THEMES.map(([id, icon, name]) =>
     `<button data-id="${id}" class="${id === choice ? "on" : ""}"><b>${icon}</b>${name}</button>`).join("") +
     `<div class="sep"></div><button data-weather="1"><b>${wi}</b>${wn}</button>` +
-    `<button data-screen="1"><b>🌙</b>Screen</button><button data-speaker="1"><b>🔊</b>Speaker</button>`;
+    `<button data-screen="1"><b>🌙</b>Screen</button><button data-speaker="1"><b>🔊</b>Speaker</button>` +
+    `<div class="sep"></div><button data-logout="1" class="${logoutArmed ? "on" : ""}"><b>🚪</b>${logoutArmed ? "Tap again" : "Log out"}</button>`;
 }
 function showPicker() {
   renderPicker();
@@ -465,7 +469,7 @@ document.addEventListener("pointerdown", (e) => {
   const b = e.target.closest && e.target.closest("#picker button");
   try {   // tap log (livingroom.py journal) to debug touch mapping
     window.webkit.messageHandlers.lr.postMessage(JSON.stringify({ tap: [Math.round(e.clientX), Math.round(e.clientY),
-      e.pointerType, b ? (b.dataset.id || (b.dataset.screen && "screen") || (b.dataset.speaker && "speaker") || "weather")
+      e.pointerType, b ? (b.dataset.id || (b.dataset.screen && "screen") || (b.dataset.speaker && "speaker") || (b.dataset.logout && "logout") || "weather")
       : e.target.id || e.target.tagName] }));
   } catch (_) {}
   if (b && b.dataset.screen && !$("picker").classList.contains("hidden")) {
@@ -474,6 +478,18 @@ document.addEventListener("pointerdown", (e) => {
   }
   if (b && b.dataset.speaker && !$("picker").classList.contains("hidden")) {
     openSpeaker();
+    return;
+  }
+  if (b && b.dataset.logout && !$("picker").classList.contains("hidden")) {
+    clearTimeout(logoutTimer);
+    if (logoutArmed) {
+      logoutArmed = false;
+      post({ logout: 1 });
+    } else {
+      logoutArmed = true;
+      logoutTimer = setTimeout(() => { logoutArmed = false; renderPicker(); }, 4000);
+    }
+    showPicker();
     return;
   }
   if (b && b.dataset.weather && !$("picker").classList.contains("hidden")) {

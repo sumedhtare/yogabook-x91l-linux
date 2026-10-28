@@ -1,0 +1,4 @@
+# Halo keyboard backlight writable by group video (the kiosk user): the
+# Living Room session turns it off and livingroom-power puts it back when the
+# session ends, when logind may no longer accept the change from it.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="ybwmi::kbd_backlight", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod 0664 /sys%p/brightness"

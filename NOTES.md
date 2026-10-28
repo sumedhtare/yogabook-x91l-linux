@@ -274,3 +274,32 @@
   device.routes.default-sink-volume = 0.4^3 (6.4 %, -24 dB): AirPlay to the
   Echo was very quiet. 51-livingroom-audio.conf sets it to 1.0; the iPhone
   and the speaker's own buttons set the loudness.
+
+- Kiosk login at boot (2026-10-28): with AutomaticLogin, every boot GDM
+  started the kiosk on tty2 while plymouth still held tty1; ~10 s later the
+  boot finished (plymouth-quit-wait, multi-user.target), GDM started a
+  greeter on tty1, sway lost the CRTC ("connector DSI-1: Failed to disable
+  CRTC 60") and the session died; the TimedLogin fallback brought a second
+  kiosk ~30 s later. Not reproducible with `systemctl restart gdm` (no
+  plymouth). Fix: TimedLogin only (greeter first, kiosk after 10 s).
+- Log out (dashboard picker, tap twice): `swaymsg exit`. logind keeps a
+  closed session's processes (KillUserProcesses=no), so the receivers and
+  livingroom-power ran on into the next session (keyboard light forced off in
+  GNOME); livingroom-session now runs `loginctl terminate-session` after
+  sway. After logout the greeter needs ~25 s to start on this Atom, then the
+  10 s timed login returns to the kiosk unless an account is picked.
+- Keyboard light: livingroom-power saves the level before turning it off
+  (~livingroom/.config/livingroom/keyboard-light) and writes it back on
+  SIGTERM/SIGHUP, straight to sysfs (73-livingroom-kbd-light.rules: group
+  video) because a closing session's logind SetBrightness may be refused.
+  GDM 50 has no PostSession scripts any more.
+- Power key: kiosk -> logind HandlePowerKey=poweroff (clean shutdown, seen
+  2026-10-11). GNOME had power-button-action 'suspend' (user setting; the
+  chassis is "convertible", so GNOME's "tablets always suspend" rule does
+  not apply) and the battery ran flat in s2idle; tablet/install.sh sets
+  'interactive' (Power Off dialog, shuts down by itself after 60 s).
+- Lid: logind/yogabook-modes-handler saw exactly one lid event since the
+  kiosk exists (2026-10-11, in GNOME, suspended fine); nothing in the kiosk
+  inhibits handle-lid-switch and logind is not "docked". Tested in the kiosk
+  2026-10-28: "Lid closed" -> s2idle within 1 s, lid open wakes it and the
+  modes handler re-enables the touchscreen. No change was needed.

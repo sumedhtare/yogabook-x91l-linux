@@ -78,6 +78,16 @@ ent=$(grep -oP "\\\$menuentry_id_option '\\Kgnulinux-\\Q$KVER\\E-advanced-[^']+"
 grub-set-default "$sub>$ent"
 grub-editenv list
 
+step "Power button: shut down (GNOME asks first), not suspend"
+# GNOME suspended on a press (power-button-action 'suspend'), and the battery
+# then ran flat in s2idle. 'interactive' shows the Power Off dialog, which
+# shuts down by itself after 60 s. Sessions without GNOME (the Living Room
+# kiosk) use logind's HandlePowerKey=poweroff.
+if [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
+  sudo -u "$SUDO_USER" dbus-run-session gsettings set \
+    org.gnome.settings-daemon.plugins.power power-button-action interactive
+fi
+
 step "initramfs (it carries modprobe.d options)"
 if command -v dracut >/dev/null; then dracut --regenerate-all -f; else update-initramfs -u -k all; fi
 

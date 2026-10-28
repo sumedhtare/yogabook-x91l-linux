@@ -75,9 +75,18 @@ find . -type f | while read -r f; do
   echo "  $dst"
 done
 
-# touchscreen rotation for the kiosk (72-yogabook-touchscreen-rotate.rules)
+# touchscreen rotation for the kiosk (72-yogabook-touchscreen-rotate.rules),
+# keyboard light writable by the kiosk (73-livingroom-kbd-light.rules)
 udevadm control --reload
 udevadm trigger --action=change --subsystem-match=input
+udevadm trigger --action=add --subsystem-match=leds
+# Before livingroom-power restored it on exit, the kiosk left the keyboard
+# light at 0 for every other account: give the next logout a level to restore.
+K=/sys/class/leds/ybwmi::kbd_backlight
+if [[ -e $K && $(cat $K/brightness) == 0 && ! -e /home/livingroom/.config/livingroom/keyboard-light ]]; then
+  cat $K/max_brightness > /home/livingroom/.config/livingroom/keyboard-light
+  chown livingroom:livingroom /home/livingroom/.config/livingroom/keyboard-light
+fi
 
 step "Session and auto-login"
 printf '[User]\nSession=livingroom\nSystemAccount=false\n' > /var/lib/AccountsService/users/livingroom
@@ -85,9 +94,12 @@ chmod 600 /var/lib/AccountsService/users/livingroom
 C=/etc/gdm3/custom.conf
 [[ -e $C.orig ]] || cp "$C" "$C.orig"
 sed -i '/^AutomaticLoginEnable=/d; /^AutomaticLogin=/d; /^TimedLogin/d' "$C"
-# Automatic login happens once per boot; timed login also logs the kiosk back
-# in 10 s after the session ends (e.g. if the compositor crashes).
-sed -i '/^\[daemon\]/a AutomaticLoginEnable=True\nAutomaticLogin=livingroom\nTimedLoginEnable=True\nTimedLogin=livingroom\nTimedLoginDelay=10' "$C"
+# Timed login only: the login screen comes up and logs the kiosk in after
+# 10 s (also 10 s after the kiosk ends: logout, crash), unless an account is
+# picked. Not AutomaticLogin: at boot it starts the kiosk while the boot
+# splash still holds tty1, and when the splash quits GDM puts a login screen
+# on tty1 that takes the display away from the kiosk ~10 s after it started.
+sed -i '/^\[daemon\]/a TimedLoginEnable=True\nTimedLogin=livingroom\nTimedLoginDelay=10' "$C"
 
 step "Bluetooth speaker"
 B=/etc/bluetooth/main.conf

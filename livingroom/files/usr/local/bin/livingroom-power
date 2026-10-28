@@ -16,6 +16,9 @@
 #   brightness = auto      or a percentage
 #   brightness_min = 5     brightness_max = 100   (the auto range, %)
 #   keyboard_light = off   off: kept off; on: left to the keyboard driver
+# The keyboard light is only off in the kiosk: its level is saved when it is
+# turned off and put back when this program stops (logout, session end) or
+# the setting changes to on.
 #
 # The screen never sleeps while another device is connected: a Bluetooth
 # device, an AirPlay/DLNA sender with an open connection, or a cast on screen
@@ -31,6 +34,7 @@ import glob
 import json
 import os
 import re
+import signal
 import socket
 import struct
 import subprocess
@@ -45,6 +49,7 @@ CONF = os.environ.get("LIVINGROOM_CONF", "/etc/livingroom.conf")
 OVERRIDE = os.path.expanduser("~/.config/livingroom/power.json")
 STATUS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "livingroom-power.json")
 DASHBOARD_APP_ID = "local.livingroom"
+KBD_SAVED = os.path.expanduser("~/.config/livingroom/keyboard-light")
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 GRACE = 6          # s after the screen goes dark before sensors count
 
@@ -516,15 +521,44 @@ class Brightness:
             self.fade(want)
 
     def keyboard(self, cfg):
-        if not cfg.kbd_off:
-            return
+        """Keep it off in the kiosk. KBD_SAVED holds the level from before (and
+        means "the kiosk turned it off"); restore_keyboard() puts it back."""
         try:
             with open(f"/sys/class/leds/{self.KBD}/brightness") as f:
-                if int(f.read()) == 0:
-                    return
+                cur = int(f.read())
         except OSError:
             return
+        if not cfg.kbd_off:
+            self.restore_keyboard()
+            return
+        if cur == 0:
+            return
+        try:
+            os.makedirs(os.path.dirname(KBD_SAVED), exist_ok=True)
+            with open(KBD_SAVED, "w") as f:
+                f.write(str(cur))
+        except OSError:
+            pass
         self.set_raw("leds", self.KBD, 0)
+
+    def restore_keyboard(self):
+        try:
+            with open(KBD_SAVED) as f:
+                value = int(f.read())
+        except (OSError, ValueError):
+            return                           # the kiosk didn't turn it off
+        # straight to sysfs (group video, 73-livingroom-kbd-light.rules):
+        # when the session ends logind may no longer take it from us
+        try:
+            with open(f"/sys/class/leds/{self.KBD}/brightness", "w") as f:
+                f.write(str(value))
+        except OSError:
+            self.set_raw("leds", self.KBD, value)
+        try:
+            os.remove(KBD_SAVED)
+        except OSError:
+            pass
+        log(f"keyboard light restored ({value})")
 
 
 # ---------------------------------------------------------------- main loop
@@ -536,6 +570,14 @@ def main():
     touch.start()
     light, camera = Light(), Camera()
     bright = Brightness(light)
+
+    def stop(signum, frame):
+        # logout, session end, or the kiosk restarting us
+        bright.restore_keyboard()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+    signal.signal(signal.SIGINT, stop)
     screen_on = True
     sway.power(True)
     last_wake = time.time()           # touch/sensor/connection/mode change
